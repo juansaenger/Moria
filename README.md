@@ -22,38 +22,35 @@ A conversation resets after 30 minutes of quiet, or when you type `!reset`.
 
 ## Setup
 
-### 1. Discord bot
+You only need to touch the server once. Everything else happens on your normal computer.
+
+1. **Fill in `homebot.env`.** Copy [`homebot.env.example`](homebot.env.example) to a file named `homebot.env`. Each line has a comment saying where to find the value. The Discord values come from the steps below.
+2. **Upload it to the server**, e.g. through the ZimaOS Files app or a network share, into a folder like `/DATA/AppData/homebot`.
+3. **Run the installer once over SSH**, from that folder:
+
+   ```sh
+   cd /DATA/AppData/homebot
+   curl -fsSL https://raw.githubusercontent.com/juansaenger/Moria/claude/sharp-allen-t1cp76/install.sh | sh
+   ```
+
+   It checks that nothing required is blank, downloads the bot into `app/`, builds it and starts it. Run the same command again to update after changing `homebot.env` or pulling new code; your `role.md` and notes are kept.
+4. **Describe your house** in `app/workspace/role.md` (room names, what "bedtime" means). Changes apply to the next conversation.
+
+### Discord bot
 
 1. Go to <https://discord.com/developers/applications> → **New Application** → name it "Home Bot".
 2. **Bot** tab → **Reset Token** → copy it into `DISCORD_BOT_TOKEN`.
-3. On the same tab, turn on **Message Content Intent**. Without it, the bot can't read what you type.
-4. **OAuth2 → URL Generator**: tick scope `bot`, then the permissions *View Channels*, *Send Messages* and *Read Message History*. Open the generated URL and add the bot to your private server.
-5. In Discord, go to **Settings → Advanced** and turn on **Developer Mode**. Then right-click the `#home` channel → **Copy Channel ID** (`DISCORD_CHANNEL_ID`). Right-click yourself (and your wife) → **Copy User ID** (`DISCORD_ALLOWED_USER_IDS`, comma-separated).
+3. On the same tab, turn on **Message Content Intent** and click Save. Without it, the bot can't read what you type.
+4. **OAuth2 → URL Generator**: tick scope `bot`, then the permissions *View Channels*, *Send Messages* and *Read Message History*. Open the generated URL and add the bot to your server.
+5. In Discord, go to **User Settings → Advanced** and turn on **Developer Mode**. Right-click `#homeassistant` → **Copy Channel ID** (`DISCORD_CHANNEL_ID`). Right-click yourself (and your wife) → **Copy User ID** (`DISCORD_ALLOWED_USER_IDS`, comma-separated).
 
-### 2. Home Assistant token
+### If it doesn't start
 
-In Home Assistant, open your **Profile → Security → Long-lived access tokens → Create token**. Put it in `HOMEASSISTANT_TOKEN`. Set `HOMEASSISTANT_URL` to HA's LAN address (e.g. `http://192.168.1.10:8123`). `localhost` won't work from inside the container.
-
-### 3. Claude API key
-
-Create a key at <https://console.anthropic.com> and put it in `ANTHROPIC_API_KEY`. Set a monthly spend limit there as well.
-
-### 4. Run it
-
-```sh
-cp .env.example .env        # fill it in
-sudo chown -R 1000:1000 workspace   # the container runs as uid 1000 and writes notes.md
-docker compose up -d --build
-docker compose logs -f
-```
-
-On start it logs `connected to Home Assistant …` and `logged in as …`. If Home Assistant is unreachable or the token is wrong, it exits with an error.
-
-Then fill in `workspace/role.md` with room names and what phrases like "bedtime" mean. The more specific it is, the fewer questions the bot has to ask. Changes apply to the next conversation; no rebuild needed.
+`cd app && docker compose logs -f` shows what's wrong. At startup the bot checks that it can reach Home Assistant and that all settings are there, and says which one is off.
 
 ## Configuration
 
-All settings live in `.env`; see `.env.example`.
+All settings live in `homebot.env`; see `homebot.env.example`.
 
 | Setting | Default | Notes |
 |---|---|---|
