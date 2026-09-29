@@ -1,0 +1,9 @@
+services:
+  homebot:
+    build: .
+    container_name: homebot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # role.md and notes.md live here so you can edit them without rebuilding.
+      - ./workspace:/app/workspace
