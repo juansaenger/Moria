@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from .media import MediaConfig
+
 
 class ConfigError(RuntimeError):
     pass
@@ -16,6 +18,10 @@ def _required(name: str) -> str:
     if not value:
         raise ConfigError(f"{name} is not set. Add it to homebot.env.")
     return value
+
+
+def _opt(name: str) -> str:
+    return os.environ.get(name, "").strip()
 
 
 def _csv(name: str, default: str = "") -> list[str]:
@@ -63,6 +69,7 @@ class Config:
     sensitive_keywords: tuple[str, ...]
     nightly_check_time: datetime.time | None
     morning_summary_time: datetime.time | None
+    media: MediaConfig = MediaConfig()
     approval_timeout_s: float = 300.0
     idle_reset_minutes: float = 30.0
 
@@ -95,4 +102,15 @@ class Config:
             sensitive_keywords=tuple(_csv("SENSITIVE_KEYWORDS", DEFAULT_SENSITIVE_KEYWORDS)),
             nightly_check_time=_time("NIGHTLY_CHECK_TIME", "22:30", tz),
             morning_summary_time=_time("MORNING_SUMMARY_TIME", "off", tz),
+            media=MediaConfig(
+                sonarr_url=_opt("SONARR_URL"),
+                sonarr_api_key=_opt("SONARR_API_KEY"),
+                radarr_url=_opt("RADARR_URL"),
+                radarr_api_key=_opt("RADARR_API_KEY"),
+                seerr_url=_opt("SEERR_URL"),
+                seerr_api_key=_opt("SEERR_API_KEY"),
+                qbit_url=_opt("QBIT_URL"),
+                qbit_username=_opt("QBIT_USERNAME"),
+                qbit_password=os.environ.get("QBIT_PASSWORD", ""),
+            ),
         )

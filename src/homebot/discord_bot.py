@@ -22,6 +22,13 @@ lights on, doors or windows open, locks unlocked, garage open, alarm not armed, 
 unusual temperatures. Do not change anything. If something needs attention, list it briefly \
 and offer to fix it. If everything looks fine, reply with exactly {NOTHING_TO_REPORT}."""
 
+DOWNLOADS_PROMPT = f"""\
+Also check the media side with media_requests and download_queue. Flag any request older than a \
+day that is not available and has nothing downloading, and any download with no progress or no \
+seeds for more than a day. For each, say in one plain sentence what is wrong and what you would do \
+(search again, grab a whole-series pack, remove and re-search). Do not grab or remove anything by \
+yourself. If the media side is fine too, the whole reply is still exactly {NOTHING_TO_REPORT}."""
+
 MORNING_PROMPT = """\
 Scheduled morning summary. Give a short rundown of the house: indoor and outdoor temperature, \
 anything left on or open overnight, and anything unusual. Do not change anything. Keep it to a \
@@ -79,7 +86,7 @@ class ApprovalView(discord.ui.View):
 
 
 class HomeBot(discord.Client):
-    def __init__(self, config: Config, agent: HomeAgent) -> None:
+    def __init__(self, config: Config, agent: HomeAgent, media_enabled: bool = False) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(intents=intents)
@@ -88,10 +95,12 @@ class HomeBot(discord.Client):
         self._conversation: Conversation | None = None
         self._lock = asyncio.Lock()  # one request at a time, in order
         self._routines: list[tasks.Loop[Any]] = []
+        self._media_enabled = media_enabled
 
     async def setup_hook(self) -> None:
+        nightly = NIGHTLY_PROMPT + ("\n\n" + DOWNLOADS_PROMPT if self._media_enabled else "")
         for when, prompt, silent_ok in (
-            (self.config.nightly_check_time, NIGHTLY_PROMPT, True),
+            (self.config.nightly_check_time, nightly, True),
             (self.config.morning_summary_time, MORNING_PROMPT, False),
         ):
             if when is None:
@@ -175,7 +184,7 @@ class HomeBot(discord.Client):
         return routine
 
 
-async def run(config: Config, agent: HomeAgent) -> None:
-    bot = HomeBot(config, agent)
+async def run(config: Config, agent: HomeAgent, media_enabled: bool = False) -> None:
+    bot = HomeBot(config, agent, media_enabled)
     async with bot:
         await bot.start(config.discord_token)

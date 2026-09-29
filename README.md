@@ -5,7 +5,8 @@ A Claude-powered bot for Home Assistant that you text in a private Discord chann
 ```
 you (Discord #home) ──> homebot container ──> Claude API
                                │
-                               └──> Home Assistant REST API
+                               ├──> Home Assistant REST API
+                               └──> Seerr / Sonarr / Radarr / qBittorrent (optional)
 ```
 
 The container only makes outgoing connections to Discord, Anthropic and Home Assistant, so you don't need port forwarding.
@@ -16,7 +17,8 @@ The container only makes outgoing connections to Discord, Anthropic and Home Ass
 - **Asks before sensitive actions.** Service calls on locks and alarm panels, or on any entity whose id or name contains a word like `garage`, `oven` or `door`, post **Approve / Deny** buttons in the channel. Only allowed users can press them. Unanswered requests are denied after 5 minutes.
 - **Refuses anything outside an allowlist of domains.** For example, it can't restart Home Assistant or run shell commands.
 - **Remembers things.** Say "remember that bedtime means…" and it appends the fact to `workspace/notes.md`. Notes load at the start of each new conversation.
-- **Runs routines.** A nightly check at 22:30 messages you only if something's left on, open or unlocked. It never changes anything by itself, but you can reply "lock it" to act on its report. An optional morning summary is included too.
+- **Looks after Plex downloads (optional).** With Seerr, Sonarr, Radarr and qBittorrent keys in `homebot.env`, it answers "where is the show I asked for?", spots stuck or stalled downloads, triggers searches, finds and grabs releases (including whole-series packs that Sonarr won't take on its own), and removes bad downloads. Grabs over 40GB, removals and torrent deletions post Approve / Deny buttons first.
+- **Runs routines.** A nightly check at 22:30 messages you only if something's left on, open or unlocked, or (with media tools on) a request has gone a day without progress. It never changes anything by itself, but you can reply "lock it" to act on its report. An optional morning summary is included too.
 
 A conversation resets after 30 minutes of quiet, or when you type `!reset`.
 
@@ -60,6 +62,12 @@ All settings live in `homebot.env`; see `homebot.env.example`.
 | `SENSITIVE_DOMAINS` | `lock,alarm_control_panel` | Every call in these domains needs approval. |
 | `SENSITIVE_KEYWORDS` | `lock,garage,alarm,oven,stove,door,gate,security` | Matched against entity id and friendly name. |
 | `ALLOWED_DOMAINS` | lights, switches, climate, covers, locks, media, scenes, scripts, vacuum… | Anything else is refused. |
+| `SONARR_URL` / `SONARR_API_KEY` | blank | Series library, queue, searches and grabs. |
+| `RADARR_URL` / `RADARR_API_KEY` | blank | Same for movies. |
+| `SEERR_URL` / `SEERR_API_KEY` | blank | Who requested what, and whether it's available yet. |
+| `QBIT_URL` / `QBIT_USERNAME` / `QBIT_PASSWORD` | blank | Live torrent states, reannounce/recheck/pause/resume, delete (with approval). |
+
+A media service whose URL or key is blank is simply left out; the bot only gets tools for the services it can reach. Startup logs say which ones answered.
 
 **About scripts and scenes.** Scripts and scenes are allowed, but they're only gated by their own name. If a script unlocks a door, give it a name containing a sensitive keyword, or remove `script` from `ALLOWED_DOMAINS`.
 
@@ -75,6 +83,7 @@ pytest
 Code layout:
 
 - `src/homebot/tools.py`: Home Assistant tools and the safety/approval rules
+- `src/homebot/media.py`: Seerr, Sonarr/Radarr and qBittorrent clients and tools
 - `src/homebot/agent.py`: the Claude tool-use loop
 - `src/homebot/discord_bot.py`: the Discord front end, approval buttons and routines
 - `src/ha_mcp/ha_client.py`: the Home Assistant REST client

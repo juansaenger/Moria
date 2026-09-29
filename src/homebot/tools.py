@@ -8,6 +8,8 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from ha_mcp.ha_client import HomeAssistantError
 
+from .media import MediaError
+
 # Called with a human-readable description of a sensitive action; returns True if approved.
 Approver = Callable[[str], Awaitable[bool]]
 
@@ -126,14 +128,42 @@ class ToolError(Exception):
     """An error reported back to Claude as a failed tool result."""
 
 
+class ToolSet(Protocol):
+    """An extra group of tools (e.g. the media stack) plugged into HomeTools."""
+
+    @property
+    def definitions(self) -> list[dict[str, Any]]: ...
+
+    @property
+    def names(self) -> set[str]: ...
+
+    async def run(self, name: str, tool_input: dict[str, Any], approve: Approver) -> str: ...
+
+
 class HomeTools:
-    def __init__(self, ha: HAClient, policy: SafetyPolicy, notes_path: Path) -> None:
+    def __init__(
+        self, ha: HAClient, policy: SafetyPolicy, notes_path: Path, extra: list[ToolSet] | None = None
+    ) -> None:
         self._ha = ha
         self._policy = policy
         self._notes_path = notes_path
+        self._extra = list(extra or [])
+
+    @property
+    def definitions(self) -> list[dict[str, Any]]:
+        defs = list(TOOL_DEFINITIONS)
+        for toolset in self._extra:
+            defs.extend(toolset.definitions)
+        return defs
 
     async def run(self, name: str, tool_input: dict[str, Any], approve: Approver) -> str:
         """Run one tool. Raises ToolError for problems Claude should see and recover from."""
+        for toolset in self._extra:
+            if name in toolset.names:
+                try:
+                    return await toolset.run(name, tool_input, approve)
+                except MediaError as exc:
+                    raise ToolError(str(exc)) from exc
         try:
             if name == "list_entities":
                 return await self._list_entities(tool_input.get("domain"), tool_input.get("search"))

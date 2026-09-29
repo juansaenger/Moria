@@ -11,6 +11,7 @@ from ha_mcp.ha_client import HomeAssistantClient, HomeAssistantError
 from .agent import HomeAgent
 from .config import Config, ConfigError
 from .discord_bot import run
+from .media import MediaTools
 from .tools import HomeTools, SafetyPolicy
 
 
@@ -28,7 +29,11 @@ async def main() -> None:
         except HomeAssistantError as exc:
             sys.exit(f"Home Assistant check failed: {exc}")
         logging.info("connected to Home Assistant %s (%s)", ha_config.get("version"), ha_config.get("location_name"))
-        tools = HomeTools(ha, policy, config.workspace / "notes.md")
+        media = MediaTools.from_config(config.media) if config.media.any else None
+        if media is not None:
+            answered = await media.check()
+            logging.info("media tools on: %s", ", ".join(answered) or "none answered (check the URLs and keys)")
+        tools = HomeTools(ha, policy, config.workspace / "notes.md", extra=[media] if media else [])
         agent = HomeAgent(
             AsyncAnthropic(),
             tools,
@@ -37,7 +42,11 @@ async def main() -> None:
             workspace=config.workspace,
             timezone=config.timezone,
         )
-        await run(config, agent)
+        try:
+            await run(config, agent, media_enabled=media is not None)
+        finally:
+            if media is not None:
+                await media.aclose()
 
 
 if __name__ == "__main__":

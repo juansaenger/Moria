@@ -17,15 +17,36 @@ REQUIRED="ANTHROPIC_API_KEY DISCORD_BOT_TOKEN DISCORD_CHANNEL_ID DISCORD_ALLOWED
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
 
+# Docker: prefer running as yourself (docker group). Only fall back to sudo when that
+# doesn't work. On ZimaOS the root filesystem is read-only, so docker under sudo can't
+# even write its own config, and a plain user in the docker group is the way to go.
 SUDO=""
-if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then SUDO="sudo"; fi
+if ! docker ps >/dev/null 2>&1; then
+    if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo docker ps >/dev/null 2>&1; then
+        SUDO="sudo"
+    else
+        fail "Can't talk to Docker. Add your user to the docker group, or run this as root."
+    fi
+fi
+
+# Docker keeps its config (and looks for the compose plugin) under $DOCKER_CONFIG.
+# When that folder isn't writable (ZimaOS: $HOME is /DATA), point it at our own.
+if [ -z "${DOCKER_CONFIG:-}" ] && ! mkdir -p "${HOME:-/}/.docker" 2>/dev/null; then
+    export DOCKER_CONFIG="$HERE/.docker"
+    mkdir -p "$DOCKER_CONFIG"
+fi
 
 if $SUDO docker compose version >/dev/null 2>&1; then
     COMPOSE="$SUDO docker compose"
 elif command -v docker-compose >/dev/null 2>&1; then
     COMPOSE="$SUDO docker-compose"
 else
-    fail "Docker Compose not found on this server."
+    # The compose plugin is often installed but not on docker's search path.
+    for plugin in /usr/lib/docker/cli-plugins/docker-compose /usr/libexec/docker/cli-plugins/docker-compose \
+                  /usr/local/lib/docker/cli-plugins/docker-compose; do
+        if [ -x "$plugin" ]; then COMPOSE="$SUDO $plugin"; break; fi
+    done
+    [ -n "${COMPOSE:-}" ] || fail "Docker Compose not found on this server."
 fi
 
 [ -f "$ENV_FILE" ] || fail "No homebot.env in $HERE. Upload it here, or cd to the folder that has it."
@@ -60,7 +81,8 @@ rm -rf "$src"
 
 mv "$env_clean" "$APP/.env"
 chmod 600 "$APP/.env"
-$SUDO chown -R 1000:1000 "$APP/workspace"
+# The container runs as uid 1000 and writes notes.md here.
+$SUDO chown -R 1000:1000 "$APP/workspace" 2>/dev/null || chmod -R a+rwX "$APP/workspace"
 
 echo "Building and starting (the first build takes a few minutes)..."
 cd "$APP"

@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from anthropic import AsyncAnthropic
 
-from .tools import TOOL_DEFINITIONS, Approver, HomeTools, ToolError
+from .tools import Approver, HomeTools, ToolError
 
 log = logging.getLogger(__name__)
 
@@ -21,13 +21,20 @@ FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 BASE_INSTRUCTIONS = """\
 You are a home assistant bot that people message on Discord. You control the house through \
-Home Assistant using your tools.
+Home Assistant using your tools. If media tools are present you also look after the Plex library: \
+Seerr takes requests, Sonarr (series) and Radarr (movies) find and import downloads, and \
+qBittorrent downloads them.
 
 - Find entities with list_entities before acting; never guess entity ids.
 - Do what was asked, then reply in one or two short sentences saying what you did. Discord \
 formatting is fine, but keep it brief.
 - If a request is ambiguous (several matching rooms or devices), ask instead of guessing.
 - If an action was denied, say so plainly and do not try to work around it.
+- For "where is my show/movie": check media_requests, then download_queue, then the library. \
+Common fixes, cheapest first: search_missing; then find_releases and grab_release (older shows \
+often only exist as a whole-series pack; grab it with force=true if Sonarr rejected it only for \
+being a full-series release); for a torrent stuck a day with no seeds, remove_download and search \
+again. Explain in plain words, not app jargon.
 - Each message starts with the sender's name and the local time in brackets."""
 
 
@@ -110,7 +117,7 @@ class HomeAgent:
             "model": self._model,
             "max_tokens": 16000,
             "system": convo.system,
-            "tools": TOOL_DEFINITIONS,
+            "tools": self._tools.definitions,
             "messages": convo.messages,
             "cache_control": {"type": "ephemeral"},
         }
