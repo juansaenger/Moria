@@ -14,7 +14,7 @@ class ConfigError(RuntimeError):
 def _required(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
-        raise ConfigError(f"{name} is not set. Add it to your .env file.")
+        raise ConfigError(f"{name} is not set. Add it to homebot.env.")
     return value
 
 
