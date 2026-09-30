@@ -114,8 +114,18 @@ class NutClient:
         try:
             writer.write(("\n".join(commands) + "\nLOGOUT\n").encode())
             await writer.drain()
-            data = await asyncio.wait_for(reader.read(65536), timeout=10)
-            lines = data.decode(errors="replace").splitlines()
+            # NUT answers in several packets, so one read can cut a list in half
+            # and silently lose variables. Read until the server says goodbye.
+            chunks: list[bytes] = []
+            while True:
+                chunk = await asyncio.wait_for(reader.read(65536), timeout=10)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                text = b"".join(chunks)
+                if b"OK Goodbye" in text or b"ERR " in text:
+                    break
+            lines = b"".join(chunks).decode(errors="replace").splitlines()
         except (OSError, asyncio.TimeoutError) as exc:
             raise ServerError(f"UPS daemon stopped responding: {exc}") from exc
         finally:

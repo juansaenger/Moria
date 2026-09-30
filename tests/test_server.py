@@ -138,7 +138,7 @@ async def test_ups_on_mains_is_quiet():
         tools = ServerTools(ServerConfig(nut_host="127.0.0.1", nut_port=server.port))
         out = await tools.run("server_health", {}, Approver())
         assert "NEEDS ATTENTION" not in out
-        assert "72% charged" in out and "20min runtime" in out
+        assert "72% charged" in out and "20min runtime" in out and "21% load" in out
     finally:
         await server.stop()
 
