@@ -27,9 +27,13 @@ def describe_capabilities(config: Config, media_services: list[str]) -> str:
     schedule = []
     if config.nightly_check_time:
         schedule.append(
-            f"a nightly check at {config.nightly_check_time.strftime('%H:%M')} that looks over the house"
-            + (" and the download pipeline" if media_services else "")
-            + ", and stays silent when nothing needs attention"
+            f"a nightly check at {config.nightly_check_time.strftime('%H:%M')} that looks over the house "
+            "and stays silent when nothing needs attention"
+        )
+    if config.download_check_time and media_services:
+        schedule.append(
+            f"a download check at {config.download_check_time.strftime('%H:%M')} that looks for stalled "
+            "requests, queue warnings and dead torrents, and stays silent when the pipeline is healthy"
         )
     if config.morning_summary_time:
         schedule.append(f"a morning summary at {config.morning_summary_time.strftime('%H:%M')}, which always posts")

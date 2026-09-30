@@ -23,7 +23,7 @@ unusual temperatures. Do not change anything. If something needs attention, list
 and offer to fix it. If everything looks fine, reply with exactly {NOTHING_TO_REPORT}."""
 
 DOWNLOADS_PROMPT = f"""\
-Also check the media side. Call stalled_media once: it returns the quiet requests, the queue \
+Scheduled download check. Call stalled_media once: it returns the quiet requests, the queue \
 warnings and the stuck torrents together, each with a hint at the cause. Only dig further with \
 other tools if a line is unclear. For each problem, say in one plain sentence what is wrong and \
 what you would do (search again, grab a whole-series pack, remove and re-search), naming the \

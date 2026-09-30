@@ -68,6 +68,7 @@ class Config:
     sensitive_domains: frozenset[str]
     sensitive_keywords: tuple[str, ...]
     nightly_check_time: datetime.time | None
+    download_check_time: datetime.time | None
     morning_summary_time: datetime.time | None
     media: MediaConfig = MediaConfig()
     approval_timeout_s: float = 300.0
@@ -101,6 +102,7 @@ class Config:
             sensitive_domains=frozenset(_csv("SENSITIVE_DOMAINS", DEFAULT_SENSITIVE_DOMAINS)),
             sensitive_keywords=tuple(_csv("SENSITIVE_KEYWORDS", DEFAULT_SENSITIVE_KEYWORDS)),
             nightly_check_time=_time("NIGHTLY_CHECK_TIME", "22:30", tz),
+            download_check_time=_time("DOWNLOAD_CHECK_TIME", "09:00", tz),
             morning_summary_time=_time("MORNING_SUMMARY_TIME", "off", tz),
             media=MediaConfig(
                 sonarr_url=_opt("SONARR_URL"),
