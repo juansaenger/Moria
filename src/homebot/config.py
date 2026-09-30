@@ -123,6 +123,7 @@ class Config:
                 qbit_url=_opt("QBIT_URL"),
                 qbit_username=_opt("QBIT_USERNAME"),
                 qbit_password=os.environ.get("QBIT_PASSWORD", ""),
+                path_map=parse_disk_paths(os.environ.get("PATH_MAP", "")),
             ),
             server=ServerConfig(
                 scrutiny_url=_opt("SCRUTINY_URL"),

@@ -302,3 +302,116 @@ async def test_stalled_media_hint_differs_for_movies(servers, monkeypatch):
     out = await tools.run("stalled_media", {}, Approver(True))
     assert "complete-series pack" not in out
     assert "not be available at your indexers" in out
+
+
+# ---- cleanup candidates: the hardlink distinction is the whole point
+
+
+@pytest.fixture
+def qbit_only(servers):
+    return MediaTools(
+        qbit=QbitClient("http://qbit", "admin", "pw"),
+        path_map=(("/downloads", "/local"),),
+    )
+
+
+def _fake_tree(monkeypatch, tmp_path, links: dict[str, int], size: int = 1024**3):
+    """Pretend /local/<name> holds one file whose link count we control."""
+    import os as _os
+
+    real_stat = _os.stat
+
+    def fake_exists(p):
+        return any(str(p).endswith(n) or n in str(p) for n in links)
+
+    def fake_isfile(p):
+        return fake_exists(p)
+
+    def fake_isdir(p):
+        return False
+
+    def fake_stat(p, *a, **k):
+        for name, nlink in links.items():
+            if name in str(p):
+                return type("S", (), {"st_nlink": nlink, "st_size": size})()
+        return real_stat(p, *a, **k)
+
+    monkeypatch.setattr(_os.path, "exists", fake_exists)
+    monkeypatch.setattr(_os.path, "isfile", fake_isfile)
+    monkeypatch.setattr(_os.path, "isdir", fake_isdir)
+    monkeypatch.setattr(_os, "stat", fake_stat)
+
+
+TORRENT_DONE = {
+    "hash": "h1", "name": "Old.Movie.1080p", "state": "stalledUP", "progress": 1.0,
+    "size": 1024**3, "dlspeed": 0, "num_seeds": 1, "added_on": 1_700_000_000,
+    "category": "radarr", "ratio": 5.0, "seeding_time": 30 * 86400,
+    "content_path": "/downloads/Old.Movie.1080p",
+}
+
+
+@pytest.mark.asyncio
+async def test_hardlinked_torrent_is_not_offered_as_space(servers, monkeypatch, tmp_path):
+    def handler(request):
+        if request.url.path == "/api/v2/auth/login":
+            return httpx.Response(200, text="Ok.")
+        if request.url.path == "/api/v2/torrents/info":
+            return httpx.Response(200, json=[TORRENT_DONE])
+        return httpx.Response(404)
+
+    monkeypatch.setattr(servers, "handler", handler)
+    _fake_tree(monkeypatch, tmp_path, {"Old.Movie.1080p": 2})  # 2 links = also in library
+    tools = MediaTools(qbit=QbitClient("http://qbit", "admin", "pw"), path_map=(("/downloads", "/local"),))
+    out = await tools.run("cleanup_candidates", {}, Approver(True))
+    assert "NOT WORTH REMOVING" in out
+    assert "Nothing is safe to remove" in out
+    assert "h1" not in out
+
+
+@pytest.mark.asyncio
+async def test_unlinked_torrent_is_offered_with_its_real_size(servers, monkeypatch, tmp_path):
+    def handler(request):
+        if request.url.path == "/api/v2/auth/login":
+            return httpx.Response(200, text="Ok.")
+        if request.url.path == "/api/v2/torrents/info":
+            return httpx.Response(200, json=[TORRENT_DONE])
+        return httpx.Response(404)
+
+    monkeypatch.setattr(servers, "handler", handler)
+    _fake_tree(monkeypatch, tmp_path, {"Old.Movie.1080p": 1})  # only copy on disk
+    tools = MediaTools(qbit=QbitClient("http://qbit", "admin", "pw"), path_map=(("/downloads", "/local"),))
+    out = await tools.run("cleanup_candidates", {}, Approver(True))
+    assert "SAFE TO REMOVE" in out and "1.0GB" in out and "hash=h1" in out
+    assert "must tap Approve" in out
+
+
+@pytest.mark.asyncio
+async def test_still_seeding_below_thresholds_is_left_alone(servers, monkeypatch, tmp_path):
+    fresh = dict(TORRENT_DONE, ratio=0.1, seeding_time=3600)
+
+    def handler(request):
+        if request.url.path == "/api/v2/auth/login":
+            return httpx.Response(200, text="Ok.")
+        if request.url.path == "/api/v2/torrents/info":
+            return httpx.Response(200, json=[fresh])
+        return httpx.Response(404)
+
+    monkeypatch.setattr(servers, "handler", handler)
+    _fake_tree(monkeypatch, tmp_path, {"Old.Movie.1080p": 1})
+    tools = MediaTools(qbit=QbitClient("http://qbit", "admin", "pw"), path_map=(("/downloads", "/local"),))
+    out = await tools.run("cleanup_candidates", {}, Approver(True))
+    assert "Nothing is safe to remove" in out
+
+
+@pytest.mark.asyncio
+async def test_without_a_path_map_it_refuses_to_guess(servers):
+    tools = MediaTools(qbit=QbitClient("http://qbit", "admin", "pw"))
+    out = await tools.run("cleanup_candidates", {}, Approver(True))
+    assert "No path mapping is configured" in out
+
+
+def test_path_translation():
+    tools = MediaTools(qbit=QbitClient("http://q", "u", "p"), path_map=(("/downloads", "/host/media/torrents"),))
+    assert tools._local_path("/downloads/a/b") == "/host/media/torrents/a/b"
+    assert tools._local_path("/downloads") == "/host/media/torrents"
+    assert tools._local_path("/elsewhere/a") is None

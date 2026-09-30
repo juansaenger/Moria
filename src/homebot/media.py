@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -20,6 +21,8 @@ Approver = Callable[[str], Awaitable[bool]]
 MAX_RELEASES = 25
 MAX_QUEUE_ITEMS = 40
 MAX_TORRENTS = 40
+# Guard against a pathological torrent with tens of thousands of files.
+MAX_FILES_PER_TORRENT = 5000
 # Grabs bigger than this ask for approval: they take days and fill disks.
 BIG_GRAB_GB = 40.0
 GB = 1024**3
@@ -43,6 +46,10 @@ class MediaConfig:
     qbit_url: str = ""
     qbit_username: str = ""
     qbit_password: str = ""
+    # Maps a path as the download client reports it to a path this container can
+    # stat, e.g. "/downloads=/host/media/torrents". Without it the cleanup tool
+    # cannot tell a hardlinked file from one that is really taking up space.
+    path_map: tuple[tuple[str, str], ...] = ()
 
     @property
     def has_sonarr(self) -> bool:
@@ -299,10 +306,12 @@ class MediaTools:
         radarr: ArrClient | None = None,
         seerr: SeerrClient | None = None,
         qbit: QbitClient | None = None,
+        path_map: tuple[tuple[str, str], ...] = (),
     ) -> None:
         self._arr = {c.kind: c for c in (sonarr, radarr) if c is not None}
         self._seerr = seerr
         self._qbit = qbit
+        self._path_map = tuple(path_map or ())
 
     @classmethod
     def from_config(cls, cfg: MediaConfig) -> "MediaTools":
@@ -311,6 +320,7 @@ class MediaTools:
             radarr=ArrClient("Radarr", cfg.radarr_url, cfg.radarr_api_key) if cfg.has_radarr else None,
             seerr=SeerrClient(cfg.seerr_url, cfg.seerr_api_key) if cfg.has_seerr else None,
             qbit=QbitClient(cfg.qbit_url, cfg.qbit_username, cfg.qbit_password) if cfg.has_qbit else None,
+            path_map=cfg.path_map,
         )
 
     async def aclose(self) -> None:
@@ -506,6 +516,27 @@ class MediaTools:
         if self._qbit:
             defs.append(
                 {
+                    "name": "cleanup_candidates",
+                    "description": (
+                        "Find finished downloads worth removing, and say how much space each would "
+                        "ACTUALLY free. Most finished torrents are hardlinked into the media library, so "
+                        "deleting them frees nothing and only stops seeding; this tool checks link counts "
+                        "and separates the two. Use it for 'the disk is filling up' and for cleanup advice. "
+                        "It only reports. Removing anything still needs torrent_action or remove_download, "
+                        "which ask the user to approve."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "min_ratio": {"type": "number", "description": "Only consider torrents at or above this share ratio. Default 2."},
+                            "min_seed_days": {"type": "number", "description": "Or seeded at least this many days. Default 14."},
+                        },
+                        "additionalProperties": False,
+                    },
+                }
+            )
+            defs.append(
+                {
                     "name": "torrent_action",
                     "description": (
                         "Act on one torrent in qBittorrent by hash: recheck, reannounce (nudge trackers on a stalled "
@@ -543,6 +574,7 @@ class MediaTools:
             "search_missing": self._search_missing,
             "remove_download": self._remove_download,
             "torrent_action": self._torrent_action,
+            "cleanup_candidates": self._cleanup,
             "stalled_media": self._stalled,
         }.get(name)
         if handler is None or name not in self.names:
@@ -723,6 +755,111 @@ class MediaTools:
         if not sections:
             return "Download pipeline looks healthy: no quiet requests, no queue warnings, no stalled torrents."
         return "\n\n".join(sections)
+
+    def _local_path(self, reported: str) -> str | None:
+        """Translate a download-client path into one this container can stat."""
+        for prefix, replacement in self._path_map:
+            if reported == prefix or reported.startswith(prefix.rstrip("/") + "/"):
+                return replacement.rstrip("/") + reported[len(prefix.rstrip("/")) :]
+        return None
+
+    def _reclaimable(self, reported_path: str) -> tuple[int, int, int]:
+        """(bytes freed if deleted, bytes that are hardlinked elsewhere, files seen).
+
+        A file with more than one link also exists in the library, so deleting the
+        torrent copy frees nothing. That distinction is the whole point of this
+        tool: without it every 'cleanup' suggestion is a guess.
+        """
+        local = self._local_path(reported_path)
+        if not local or not os.path.exists(local):
+            return 0, 0, 0
+        free = shared = seen = 0
+        paths = [local] if os.path.isfile(local) else []
+        if os.path.isdir(local):
+            for root, _dirs, files in os.walk(local):
+                paths.extend(os.path.join(root, f) for f in files)
+        for path in paths[:MAX_FILES_PER_TORRENT]:
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            seen += 1
+            if st.st_nlink > 1:
+                shared += st.st_size
+            else:
+                free += st.st_size
+        return free, shared, seen
+
+    async def _cleanup(self, tool_input: dict[str, Any], _approve: Approver) -> str:
+        assert self._qbit is not None
+        try:
+            min_ratio = float(tool_input.get("min_ratio", 2.0))
+            min_days = float(tool_input.get("min_seed_days", 14))
+        except (TypeError, ValueError) as exc:
+            raise MediaError("min_ratio and min_seed_days must be numbers") from exc
+        torrents = await self._qbit.torrents()
+        if not self._path_map:
+            return (
+                "No path mapping is configured, so I cannot tell which downloads are hardlinked into the "
+                "library and which are really using space. Set PATH_MAP in homebot.env before trusting any "
+                "cleanup advice."
+            )
+        done: list[tuple[int, str]] = []
+        no_gain = 0
+        no_gain_bytes = 0
+        unseen = 0
+        for tor in torrents:
+            if float(tor.get("progress") or 0) < 1:
+                continue
+            ratio = float(tor.get("ratio") or 0)
+            days = float(tor.get("seeding_time") or 0) / 86400
+            if ratio < min_ratio and days < min_days:
+                continue
+            free, shared, seen = self._reclaimable(tor.get("content_path") or "")
+            if not seen:
+                unseen += 1
+                continue
+            if free <= 0:
+                no_gain += 1
+                no_gain_bytes += shared
+                continue
+            why = []
+            if ratio >= min_ratio:
+                why.append(f"ratio {ratio:.1f}")
+            if days >= min_days:
+                why.append(f"seeded {days:.0f}d")
+            done.append(
+                (
+                    free,
+                    f"{_gb(free)} | {tor.get('name')[:56]} | {tor.get('category') or 'no category'} | "
+                    f"{', '.join(why)} | hash={tor.get('hash')}",
+                )
+            )
+        done.sort(reverse=True)
+        total = sum(f for f, _ in done)
+        out = []
+        if done:
+            out.append(
+                f"SAFE TO REMOVE ({_gb(total)} would actually be freed across {len(done)} torrents).\n"
+                "These files exist only in the download folder, so deleting them frees real space:\n"
+                + "\n".join(line for _, line in done[:25])
+            )
+            if len(done) > 25:
+                out.append(f"... and {len(done) - 25} more, smaller.")
+        else:
+            out.append("Nothing is safe to remove for real space right now.")
+        if no_gain:
+            out.append(
+                f"NOT WORTH REMOVING: {no_gain} finished torrents ({_gb(no_gain_bytes)}) are hardlinked into "
+                "the library. Removing them frees no space at all, it only stops you seeding."
+            )
+        if unseen:
+            out.append(f"{unseen} torrents could not be checked because their files were not visible from here.")
+        out.append(
+            "Removal is not automatic. Use torrent_action with delete, or remove_download, and the user "
+            "must tap Approve."
+        )
+        return "\n\n".join(out)
 
     async def _library_search(self, tool_input: dict[str, Any], _approve: Approver) -> str:
         needle = _str(tool_input, "query").lower()
