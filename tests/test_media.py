@@ -225,3 +225,52 @@ async def test_home_tools_routes_media_and_reports_errors(media, tmp_path):
     assert "queue_id=55" in await tools.run("download_queue", {}, approve)
     with pytest.raises(ToolError):
         await tools.run("find_releases", {"kind": "movie", "id": 1}, approve)
+
+
+@pytest.mark.asyncio
+async def test_stalled_media_reports_all_three_kinds(media):
+    out = await media.run("stalled_media", {}, Approver(True))
+    # The old, unavailable request with nothing downloading for it.
+    assert "REQUESTS WITH NO ACTIVITY" in out
+    assert "Old Show" in out and "Shelby" in out
+    assert "never reached Sonarr" in out  # no externalServiceId on the request
+    # The queue item Sonarr flagged.
+    assert "QUEUE ITEMS WITH WARNINGS" in out
+    assert "queue_id=55" in out and "stalled with no connections" in out
+    # The torrent that is not moving, with the hash needed to act on it.
+    assert "TORRENTS NOT MOVING" in out
+    assert "hash=abc123" in out and "no seeds" in out
+
+
+@pytest.mark.asyncio
+async def test_stalled_media_ignores_requests_newer_than_the_window(media):
+    out = await media.run("stalled_media", {"hours": 500000}, Approver(True))
+    assert "REQUESTS WITH NO ACTIVITY" not in out
+    assert "QUEUE ITEMS WITH WARNINGS" in out  # queue problems are not age-gated
+
+
+@pytest.mark.asyncio
+async def test_stalled_media_skips_requests_already_downloading(servers, monkeypatch):
+    """A request whose Sonarr id is in the queue is being worked on, so it is not 'quiet'."""
+    monkeypatch.setitem(QUEUE_ITEM, "seriesId", 7)
+    monkeypatch.setitem(REQUEST["media"], "externalServiceId", 7)
+    tools = MediaTools(
+        sonarr=ArrClient("Sonarr", "http://sonarr", "k"),
+        seerr=SeerrClient("http://seerr", "k"),
+    )
+    out = await tools.run("stalled_media", {}, Approver(True))
+    assert "REQUESTS WITH NO ACTIVITY" not in out
+
+
+@pytest.mark.asyncio
+async def test_stalled_media_says_so_when_healthy(servers, monkeypatch):
+    monkeypatch.setitem(QUEUE_ITEM, "status", "downloading")
+    monkeypatch.setitem(QUEUE_ITEM, "trackedDownloadStatus", "ok")
+    tools = MediaTools(sonarr=ArrClient("Sonarr", "http://sonarr", "k"))
+    out = await tools.run("stalled_media", {}, Approver(True))
+    assert "looks healthy" in out
+
+
+def test_stalled_media_needs_an_arr_app():
+    seerr_only = MediaTools(seerr=SeerrClient("http://seerr", "k"))
+    assert "stalled_media" not in seerr_only.names

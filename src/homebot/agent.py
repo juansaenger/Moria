@@ -35,7 +35,10 @@ Common fixes, cheapest first: search_missing; then find_releases and grab_releas
 often only exist as a whole-series pack; grab it with force=true if Sonarr rejected it only for \
 being a full-series release); for a torrent stuck a day with no seeds, remove_download and search \
 again. Explain in plain words, not app jargon.
-- Each message starts with the sender's name and the local time in brackets."""
+- Each message starts with the sender's name and the local time in brackets. A message from \
+"Scheduler" is one of your own scheduled runs firing, not a person typing.
+- Answer questions about yourself from the <capabilities> block below, never from general \
+assumptions about chatbots. You do run on a schedule when one is listed there."""
 
 
 @dataclass
@@ -50,8 +53,10 @@ class Conversation:
         return time.monotonic() - self.last_active > idle_minutes * 60
 
 
-def build_system_prompt(workspace: Path) -> str:
+def build_system_prompt(workspace: Path, capabilities: str = "") -> str:
     parts = [BASE_INSTRUCTIONS]
+    if capabilities.strip():
+        parts.append(f"<capabilities>\n{capabilities.strip()}\n</capabilities>")
     role = workspace / "role.md"
     notes = workspace / "notes.md"
     if role.exists():
@@ -71,6 +76,7 @@ class HomeAgent:
         effort: str | None,
         workspace: Path,
         timezone: ZoneInfo,
+        capabilities: str = "",
     ) -> None:
         self._client = client
         self._tools = tools
@@ -78,11 +84,12 @@ class HomeAgent:
         self._effort = effort
         self._workspace = workspace
         self._tz = timezone
+        self._capabilities = capabilities
 
     def new_conversation(self) -> Conversation:
         # The system prompt is frozen per conversation so notes saved mid-chat
         # don't rewrite history (which would break caching and thinking replay).
-        return Conversation(system=build_system_prompt(self._workspace))
+        return Conversation(system=build_system_prompt(self._workspace, self._capabilities))
 
     async def ask(self, convo: Conversation, sender: str, text: str, approve: Approver) -> str:
         now = datetime.datetime.now(self._tz).strftime("%a %Y-%m-%d %H:%M")

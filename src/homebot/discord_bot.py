@@ -23,11 +23,12 @@ unusual temperatures. Do not change anything. If something needs attention, list
 and offer to fix it. If everything looks fine, reply with exactly {NOTHING_TO_REPORT}."""
 
 DOWNLOADS_PROMPT = f"""\
-Also check the media side with media_requests and download_queue. Flag any request older than a \
-day that is not available and has nothing downloading, and any download with no progress or no \
-seeds for more than a day. For each, say in one plain sentence what is wrong and what you would do \
-(search again, grab a whole-series pack, remove and re-search). Do not grab or remove anything by \
-yourself. If the media side is fine too, the whole reply is still exactly {NOTHING_TO_REPORT}."""
+Also check the media side. Call stalled_media once: it returns the quiet requests, the queue \
+warnings and the stuck torrents together, each with a hint at the cause. Only dig further with \
+other tools if a line is unclear. For each problem, say in one plain sentence what is wrong and \
+what you would do (search again, grab a whole-series pack, remove and re-search), naming the \
+person who asked when the line has one. Do not grab or remove anything by yourself; offer, and \
+wait to be told. If the media side is fine too, the whole reply is still exactly {NOTHING_TO_REPORT}."""
 
 MORNING_PROMPT = """\
 Scheduled morning summary. Give a short rundown of the house: indoor and outdoor temperature, \

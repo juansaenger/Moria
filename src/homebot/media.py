@@ -480,6 +480,29 @@ class MediaTools:
                     },
                 },
             ]
+        if self._arr:
+            defs.append(
+                {
+                    "name": "stalled_media",
+                    "description": (
+                        "One-call health check of the whole download pipeline. Lists (a) requests that are older "
+                        "than `hours` and still not available with nothing downloading for them, (b) queue items "
+                        "with warnings or errors, and (c) torrents that are stalled or making no progress. "
+                        "Each line ends with a hint at the likely cause. Use this for the scheduled nightly check "
+                        "and for 'is anything stuck?' questions."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "hours": {
+                                "type": "number",
+                                "description": "How old a request must be before silence counts as stuck. Default 24.",
+                            }
+                        },
+                        "additionalProperties": False,
+                    },
+                }
+            )
         if self._qbit:
             defs.append(
                 {
@@ -520,6 +543,7 @@ class MediaTools:
             "search_missing": self._search_missing,
             "remove_download": self._remove_download,
             "torrent_action": self._torrent_action,
+            "stalled_media": self._stalled,
         }.get(name)
         if handler is None or name not in self.names:
             raise MediaError(f"Unknown tool {name!r}")
@@ -554,6 +578,135 @@ class MediaTools:
                 f"request {SEERR_REQUEST_STATUS.get(req.get('status'), '?')} | media {SEERR_MEDIA_STATUS.get(media_status, '?')} | {ids}"
             )
         return "\n".join(lines) or ("No open requests." if only_open else "No requests.")
+
+    async def _stalled(self, tool_input: dict[str, Any], _approve: Approver) -> str:
+        """Everything the nightly check needs, in one call."""
+        try:
+            hours = max(float(tool_input.get("hours", 24)), 0.0)
+        except (TypeError, ValueError) as exc:
+            raise MediaError("hours must be a number") from exc
+        cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
+
+        # What each app is actively working on, and which queue items look unhealthy.
+        active: dict[str, set[int]] = {kind: set() for kind in self._arr}
+        bad_queue: list[str] = []
+        for kind, client in sorted(self._arr.items()):
+            try:
+                records = await client.queue()
+            except MediaError as exc:
+                bad_queue.append(f"{client.name} queue unreadable: {exc}")
+                continue
+            for rec in records:
+                item_id = rec.get("seriesId") if kind == "series" else rec.get("movieId")
+                if item_id:
+                    active[kind].add(int(item_id))
+                status = str(rec.get("status") or "").lower()
+                tracked = str(rec.get("trackedDownloadStatus") or "").lower()
+                notes = [
+                    str(msg)
+                    for entry in rec.get("statusMessages") or []
+                    for msg in (entry.get("messages") or [entry.get("title")])
+                    if msg
+                ]
+                if rec.get("errorMessage"):
+                    notes.append(str(rec["errorMessage"]))
+                if tracked in ("warning", "error") or status in ("warning", "failed", "stalled"):
+                    title = rec.get("title") or "?"
+                    left = _gb(rec.get("sizeleft", 0))
+                    why = "; ".join(dict.fromkeys(notes))[:200] or status or tracked
+                    bad_queue.append(
+                        f"{kind} queue_id={rec.get('id')} | {title} | status={status}/{tracked} | {left} left | {why}"
+                    )
+
+        # Requests that have gone quiet: old, not available, and nothing downloading for them.
+        quiet: list[str] = []
+        if self._seerr:
+            try:
+                requests = await self._seerr.requests()
+            except MediaError as exc:
+                quiet.append(f"Seerr unreadable: {exc}")
+                requests = []
+            for req in requests:
+                media = req.get("media") or {}
+                if media.get("status") == 5:  # fully available
+                    continue
+                created = req.get("createdAt") or ""
+                try:
+                    when = datetime.datetime.fromisoformat(created.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if when > cutoff:
+                    continue
+                media_type = req.get("type", "movie")
+                kind = "series" if media_type == "tv" else "movie"
+                service_id = media.get("externalServiceId")
+                if kind in active and service_id and int(service_id) in active[kind]:
+                    continue  # something is downloading for it right now
+                title = await self._seerr.title(media_type, media.get("tmdbId", 0))
+                who = (req.get("requestedBy") or {}).get("displayName", "?")
+                seasons = ",".join(str(s.get("seasonNumber")) for s in req.get("seasons") or [])
+                season_txt = f" S{seasons}" if seasons else ""
+                request_status = SEERR_REQUEST_STATUS.get(req.get("status"), "?")
+                media_status = SEERR_MEDIA_STATUS.get(media.get("status", 1), "?")
+                if req.get("status") == 1:
+                    hint = "waiting for someone to approve it in Seerr"
+                elif req.get("status") == 3:
+                    hint = "declined in Seerr"
+                elif not service_id:
+                    hint = f"never reached {'Sonarr' if kind == 'series' else 'Radarr'}"
+                else:
+                    hint = (
+                        f"{'Sonarr' if kind == 'series' else 'Radarr'} id={service_id}, nothing downloading; "
+                        "try search_missing, then find_releases (a show that only exists as a complete-series "
+                        "pack is never auto-grabbed)"
+                    )
+                quiet.append(
+                    f"{kind} | {title}{season_txt} | asked by {who} {_age(created)} | request={request_status} "
+                    f"media={media_status} | {hint}"
+                )
+
+        # Torrents that are not moving.
+        dead: list[str] = []
+        if self._qbit:
+            try:
+                torrents = await self._qbit.torrents()
+            except MediaError as exc:
+                dead.append(f"qBittorrent unreadable: {exc}")
+                torrents = []
+            for tor in torrents:
+                progress = float(tor.get("progress") or 0)
+                if progress >= 1:
+                    continue  # finished; seeding is not a problem
+                state = str(tor.get("state") or "")
+                speed = int(tor.get("dlspeed") or 0)
+                seeds = int(tor.get("num_seeds") or 0)
+                age_seconds = 0.0
+                try:
+                    age_seconds = datetime.datetime.now(datetime.timezone.utc).timestamp() - float(tor.get("added_on") or 0)
+                except (TypeError, ValueError):
+                    pass
+                idle = speed == 0 and age_seconds > 3600
+                if "stalled" not in state.lower() and not idle and state not in ("error", "missingFiles"):
+                    continue
+                why = {
+                    "error": "qBittorrent reports an error",
+                    "missingFiles": "files are missing on disk; needs a recheck",
+                }.get(state, "no seeds" if seeds == 0 else "seeds present but no data moving; try reannounce")
+                dead.append(
+                    f"{tor.get('name')} | {state} | {progress * 100:.0f}% | {seeds} seeds | added {_epoch_age(tor.get('added_on'))} "
+                    f"| hash={tor.get('hash')} | {why}"
+                )
+
+        sections = []
+        if quiet:
+            sections.append(f"REQUESTS WITH NO ACTIVITY (older than {hours:g}h):\n" + "\n".join(quiet[:20]))
+        if bad_queue:
+            sections.append("QUEUE ITEMS WITH WARNINGS:\n" + "\n".join(bad_queue[:20]))
+        if dead:
+            sections.append("TORRENTS NOT MOVING:\n" + "\n".join(dead[:20]))
+        if not sections:
+            return "Download pipeline looks healthy: no quiet requests, no queue warnings, no stalled torrents."
+        return "\n\n".join(sections)
 
     async def _library_search(self, tool_input: dict[str, Any], _approve: Approver) -> str:
         needle = _str(tool_input, "query").lower()
