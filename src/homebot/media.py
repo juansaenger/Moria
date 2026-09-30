@@ -189,10 +189,13 @@ class QbitClient:
         if self._username.lower() == "bypass":
             self._logged_in = True  # Web UI auth bypass for the local subnet
             return
+        # qBittorrent 4.x answers "Ok."/"Fails." with 200; 5.x answers 204 with an
+        # empty body and sets the session cookie, so an empty result is a success.
         result = await self._http.request(
             "POST", "/api/v2/auth/login", data={"username": self._username, "password": self._password}
         )
-        if result != "Ok.":
+        text = "" if result is None else str(result).strip()
+        if text and text != "Ok.":
             raise MediaError("qBittorrent login failed. Check QBIT_USERNAME and QBIT_PASSWORD.")
         self._logged_in = True
 
