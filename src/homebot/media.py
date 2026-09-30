@@ -590,6 +590,7 @@ class MediaTools:
         # What each app is actively working on, and which queue items look unhealthy.
         active: dict[str, set[int]] = {kind: set() for kind in self._arr}
         bad_queue: list[str] = []
+        seen_queue: dict[tuple[str, ...], list[Any]] = {}
         for kind, client in sorted(self._arr.items()):
             try:
                 records = await client.queue()
@@ -614,9 +615,19 @@ class MediaTools:
                     title = rec.get("title") or "?"
                     left = _gb(rec.get("sizeleft", 0))
                     why = "; ".join(dict.fromkeys(notes))[:200] or status or tracked
-                    bad_queue.append(
-                        f"{kind} queue_id={rec.get('id')} | {title} | status={status}/{tracked} | {left} left | {why}"
-                    )
+                    # Sonarr can hold the same release dozens of times, once per episode.
+                    # Collapse those into one line so the report stays readable.
+                    key = (kind, title, status, tracked, why)
+                    if key in seen_queue:
+                        seen_queue[key][1] += 1
+                        continue
+                    seen_queue[key] = [
+                        f"{kind} queue_id={rec.get('id')} | {title} | status={status}/{tracked} | {left} left | {why}",
+                        1,
+                    ]
+
+        for line, count in seen_queue.values():
+            bad_queue.append(line + (f" | and {count - 1} more queue items for the same release" if count > 1 else ""))
 
         # Requests that have gone quiet: old, not available, and nothing downloading for them.
         quiet: list[str] = []
@@ -654,11 +665,16 @@ class MediaTools:
                     hint = "declined in Seerr"
                 elif not service_id:
                     hint = f"never reached {'Sonarr' if kind == 'series' else 'Radarr'}"
+                elif kind == "series":
+                    hint = (
+                        f"Sonarr id={service_id}, nothing downloading; try search_missing, then find_releases "
+                        "(an old show that only exists as a complete-series pack is never auto-grabbed, so it "
+                        "has to be grabbed by hand with force=true)"
+                    )
                 else:
                     hint = (
-                        f"{'Sonarr' if kind == 'series' else 'Radarr'} id={service_id}, nothing downloading; "
-                        "try search_missing, then find_releases (a show that only exists as a complete-series "
-                        "pack is never auto-grabbed)"
+                        f"Radarr id={service_id}, nothing downloading; try search_missing, then find_releases "
+                        "(if nothing comes back the movie may simply not be available at your indexers yet)"
                     )
                 quiet.append(
                     f"{kind} | {title}{season_txt} | asked by {who} {_age(created)} | request={request_status} "

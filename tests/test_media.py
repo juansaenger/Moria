@@ -274,3 +274,31 @@ async def test_stalled_media_says_so_when_healthy(servers, monkeypatch):
 def test_stalled_media_needs_an_arr_app():
     seerr_only = MediaTools(seerr=SeerrClient("http://seerr", "k"))
     assert "stalled_media" not in seerr_only.names
+
+
+@pytest.mark.asyncio
+async def test_stalled_media_collapses_duplicate_queue_rows(servers, monkeypatch):
+    """Sonarr lists one season pack once per episode; the report should say it once."""
+    dupes = [dict(QUEUE_ITEM, id=n) for n in (1, 2, 3)]
+    original = servers.handler
+
+    def handler(request):
+        if request.url.host == "sonarr" and request.url.path == "/api/v3/queue":
+            return httpx.Response(200, json={"records": dupes})
+        return original(request)
+
+    monkeypatch.setattr(servers, "handler", handler)
+    tools = MediaTools(sonarr=ArrClient("Sonarr", "http://sonarr", "k"))
+    out = await tools.run("stalled_media", {}, Approver(True))
+    assert out.count("Old.Show.S01.Complete-GRP") == 1
+    assert "and 2 more queue items for the same release" in out
+
+
+@pytest.mark.asyncio
+async def test_stalled_media_hint_differs_for_movies(servers, monkeypatch):
+    monkeypatch.setitem(REQUEST, "type", "movie")
+    monkeypatch.setitem(REQUEST["media"], "externalServiceId", 614)
+    tools = MediaTools(radarr=ArrClient("Radarr", "http://radarr", "k"), seerr=SeerrClient("http://seerr", "k"))
+    out = await tools.run("stalled_media", {}, Approver(True))
+    assert "complete-series pack" not in out
+    assert "not be available at your indexers" in out
