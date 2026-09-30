@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable, Protocol
 from ha_mcp.ha_client import HomeAssistantError
 
 from .media import MediaError
+from .server import ServerError
 
 # Called with a human-readable description of a sensitive action; returns True if approved.
 Approver = Callable[[str], Awaitable[bool]]
@@ -162,7 +163,7 @@ class HomeTools:
             if name in toolset.names:
                 try:
                     return await toolset.run(name, tool_input, approve)
-                except MediaError as exc:
+                except (MediaError, ServerError) as exc:
                     raise ToolError(str(exc)) from exc
         try:
             if name == "list_entities":

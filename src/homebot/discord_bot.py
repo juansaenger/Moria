@@ -30,6 +30,14 @@ what you would do (search again, grab a whole-series pack, remove and re-search)
 person who asked when the line has one. Do not grab or remove anything by yourself; offer, and \
 wait to be told. If the media side is fine too, the whole reply is still exactly {NOTHING_TO_REPORT}."""
 
+SERVER_PROMPT = f"""\
+Scheduled server health check. Call server_health once. It returns only what needs \
+attention: failing or hot drives, UPS problems, filesystems running out of room, and \
+monitored services that are down. Explain each one in plain words, say how urgent it is, \
+and say what you would do about it. A drive with a SMART failure is the one thing worth \
+being blunt about. Do not change anything. If nothing needs attention, reply with exactly \
+{NOTHING_TO_REPORT}."""
+
 MORNING_PROMPT = """\
 Scheduled morning summary. Give a short rundown of the house: indoor and outdoor temperature, \
 anything left on or open overnight, and anything unusual. Do not change anything. Keep it to a \
@@ -87,7 +95,9 @@ class ApprovalView(discord.ui.View):
 
 
 class HomeBot(discord.Client):
-    def __init__(self, config: Config, agent: HomeAgent, media_enabled: bool = False) -> None:
+    def __init__(
+        self, config: Config, agent: HomeAgent, media_enabled: bool = False, server_enabled: bool = False
+    ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(intents=intents)
@@ -97,13 +107,16 @@ class HomeBot(discord.Client):
         self._lock = asyncio.Lock()  # one request at a time, in order
         self._routines: list[tasks.Loop[Any]] = []
         self._media_enabled = media_enabled
+        self._server_enabled = server_enabled
 
     async def setup_hook(self) -> None:
         # The house check belongs at night; the download check belongs in the
         # morning, when there is time to act on what it finds.
         downloads = self.config.download_check_time if self._media_enabled else None
+        health = self.config.server_check_time if self._server_enabled else None
         for when, prompt, silent_ok in (
             (self.config.nightly_check_time, NIGHTLY_PROMPT, True),
+            (health, SERVER_PROMPT, True),
             (downloads, DOWNLOADS_PROMPT, True),
             (self.config.morning_summary_time, MORNING_PROMPT, False),
         ):
@@ -188,7 +201,9 @@ class HomeBot(discord.Client):
         return routine
 
 
-async def run(config: Config, agent: HomeAgent, media_enabled: bool = False) -> None:
-    bot = HomeBot(config, agent, media_enabled)
+async def run(
+    config: Config, agent: HomeAgent, media_enabled: bool = False, server_enabled: bool = False
+) -> None:
+    bot = HomeBot(config, agent, media_enabled, server_enabled)
     async with bot:
         await bot.start(config.discord_token)

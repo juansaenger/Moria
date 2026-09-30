@@ -77,7 +77,9 @@ class HomeAgent:
         workspace: Path,
         timezone: ZoneInfo,
         capabilities: str = "",
+        cache_ttl: str = "1h",
     ) -> None:
+        self._cache_ttl = cache_ttl
         self._client = client
         self._tools = tools
         self._model = model
@@ -98,6 +100,7 @@ class HomeAgent:
 
         for _ in range(MAX_TOOL_ROUNDS):
             response = await self._create(convo)
+            _log_cache(response)
             if response.stop_reason == "refusal":
                 # Drop the whole exchange so the next message starts clean.
                 convo.messages.clear()
@@ -126,8 +129,14 @@ class HomeAgent:
             "system": convo.system,
             "tools": self._tools.definitions,
             "messages": convo.messages,
-            "cache_control": {"type": "ephemeral"},
+            # Automatic caching of the last cacheable block, which covers the tool
+            # definitions and the system prompt. Both are frozen per conversation,
+            # so the prefix is stable. The default 5 minute lifetime is useless for
+            # a house bot that gets a message every few hours, hence the long TTL.
+            "cache_control": {"type": "ephemeral", "ttl": self._cache_ttl},
         }
+        if self._cache_ttl == "off":
+            params.pop("cache_control")
         if self._effort and not self._model.startswith("claude-haiku"):
             params["output_config"] = {"effort": self._effort}
         if self._model in FALLBACK_MODELS:
@@ -147,6 +156,19 @@ class HomeAgent:
             log.exception("tool %s crashed", block.name)
             message = "The tool failed unexpectedly."
         return {"type": "tool_result", "tool_use_id": block.id, "content": message, "is_error": True}
+
+
+def _log_cache(response: Any) -> None:
+    """Make cache behaviour visible. A read of 0 on every request means the prefix
+    is being invalidated somewhere, which is otherwise silent and expensive."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return
+    read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    written = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    fresh = getattr(usage, "input_tokens", 0) or 0
+    log.info("tokens: %s cached-read, %s cached-write, %s fresh in, %s out",
+             read, written, fresh, getattr(usage, "output_tokens", 0) or 0)
 
 
 def _text_of(response: Any) -> str:

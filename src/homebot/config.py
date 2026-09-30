@@ -7,6 +7,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .media import MediaConfig
+from .server import ServerConfig, parse_disk_paths
 
 
 class ConfigError(RuntimeError):
@@ -62,15 +63,18 @@ class Config:
     ha_token: str
     model: str
     effort: str | None
+    cache_ttl: str
     timezone: ZoneInfo
     workspace: Path
     allowed_domains: frozenset[str]
     sensitive_domains: frozenset[str]
     sensitive_keywords: tuple[str, ...]
     nightly_check_time: datetime.time | None
+    server_check_time: datetime.time | None
     download_check_time: datetime.time | None
     morning_summary_time: datetime.time | None
     media: MediaConfig = MediaConfig()
+    server: ServerConfig = ServerConfig()
     approval_timeout_s: float = 300.0
     idle_reset_minutes: float = 30.0
 
@@ -86,6 +90,9 @@ class Config:
             raise ConfigError("DISCORD_ALLOWED_USER_IDS is empty, so nobody could use the bot.")
         _required("ANTHROPIC_API_KEY")  # read by the Anthropic client itself
         effort = os.environ.get("CLAUDE_EFFORT", "low").strip().lower() or None
+        cache_ttl = os.environ.get("CACHE_TTL", "1h").strip().lower() or "1h"
+        if cache_ttl not in ("5m", "1h", "off"):
+            raise ConfigError(f"CACHE_TTL must be 5m, 1h or off, got {cache_ttl!r}")
         if effort not in (None, "low", "medium", "high", "xhigh", "max"):
             raise ConfigError(f"CLAUDE_EFFORT must be low, medium, high, xhigh or max, got {effort!r}")
         return cls(
@@ -96,6 +103,7 @@ class Config:
             ha_token=_required("HOMEASSISTANT_TOKEN"),
             model=os.environ.get("CLAUDE_MODEL", "claude-opus-5-5").strip(),
             effort=effort,
+            cache_ttl=cache_ttl,
             timezone=tz,
             workspace=Path(os.environ.get("HOMEBOT_WORKSPACE", "workspace")),
             allowed_domains=frozenset(_csv("ALLOWED_DOMAINS", DEFAULT_ALLOWED_DOMAINS)),
@@ -103,6 +111,7 @@ class Config:
             sensitive_keywords=tuple(_csv("SENSITIVE_KEYWORDS", DEFAULT_SENSITIVE_KEYWORDS)),
             nightly_check_time=_time("NIGHTLY_CHECK_TIME", "22:30", tz),
             download_check_time=_time("DOWNLOAD_CHECK_TIME", "09:00", tz),
+            server_check_time=_time("SERVER_CHECK_TIME", "08:45", tz),
             morning_summary_time=_time("MORNING_SUMMARY_TIME", "off", tz),
             media=MediaConfig(
                 sonarr_url=_opt("SONARR_URL"),
@@ -114,5 +123,14 @@ class Config:
                 qbit_url=_opt("QBIT_URL"),
                 qbit_username=_opt("QBIT_USERNAME"),
                 qbit_password=os.environ.get("QBIT_PASSWORD", ""),
+            ),
+            server=ServerConfig(
+                scrutiny_url=_opt("SCRUTINY_URL"),
+                nut_host=_opt("NUT_HOST"),
+                nut_port=int(os.environ.get("NUT_PORT", "3493") or 3493),
+                kuma_url=_opt("UPTIMEKUMA_URL"),
+                kuma_api_key=os.environ.get("UPTIMEKUMA_API_KEY", "").strip(),
+                disk_paths=parse_disk_paths(os.environ.get("DISK_PATHS", "/host/media=Media,/host/appdata=AppData")),
+                min_free_pct=float(os.environ.get("DISK_MIN_FREE_PCT", "10") or 10),
             ),
         )

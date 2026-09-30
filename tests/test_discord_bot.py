@@ -43,23 +43,33 @@ async def test_house_and_download_checks_are_separate_routines(monkeypatch):
     bot.config = types.SimpleNamespace(
         nightly_check_time=datetime.time(22, 30, tzinfo=tz),
         download_check_time=datetime.time(9, 0, tzinfo=tz),
+        server_check_time=datetime.time(8, 45, tzinfo=tz),
         morning_summary_time=None,
     )
     bot._routines = []
     bot._media_enabled = True
+    bot._server_enabled = True
     await db.HomeBot.setup_hook(bot)
-    assert sorted(t.strftime("%H:%M") for t in started) == ["09:00", "22:30"]
+    assert sorted(x.strftime("%H:%M") for x in started) == ["08:45", "09:00", "22:30"]
 
-    # With no media stack there is nothing to check, so no 09:00 routine.
+    # Each optional stack drops only its own routine.
     started.clear()
     bot._routines = []
     bot._media_enabled = False
     await db.HomeBot.setup_hook(bot)
-    assert [t.strftime("%H:%M") for t in started] == ["22:30"]
+    assert sorted(x.strftime("%H:%M") for x in started) == ["08:45", "22:30"]
+
+    started.clear()
+    bot._routines = []
+    bot._server_enabled = False
+    await db.HomeBot.setup_hook(bot)
+    assert [x.strftime("%H:%M") for x in started] == ["22:30"]
 
 
-def test_nightly_prompt_no_longer_carries_downloads():
+def test_each_routine_prompt_targets_its_own_tool():
     from homebot import discord_bot as db
 
     assert "stalled_media" not in db.NIGHTLY_PROMPT
     assert "stalled_media" in db.DOWNLOADS_PROMPT
+    assert "server_health" in db.SERVER_PROMPT
+    assert "server_health" not in db.NIGHTLY_PROMPT

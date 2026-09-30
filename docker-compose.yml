@@ -7,3 +7,7 @@ services:
     volumes:
       # role.md and notes.md live here so you can edit them without rebuilding.
       - ./workspace:/app/workspace
+      # Read-only, for the free-space half of the server health check.
+      # Change the host paths if your media and app data live elsewhere.
+      - /media/sda2:/host/media:ro
+      - /DATA:/host/appdata:ro

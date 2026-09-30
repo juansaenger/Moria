@@ -12,10 +12,13 @@ from .agent import HomeAgent
 from .config import Config, ConfigError
 from .discord_bot import run
 from .media import MediaTools
+from .server import ServerTools
 from .tools import HomeTools, SafetyPolicy
 
 
-def describe_capabilities(config: Config, media_services: list[str]) -> str:
+def describe_capabilities(
+    config: Config, media_services: list[str], server_sources: list[str] | None = None
+) -> str:
     """Facts about this deployment, so the bot can answer questions about itself."""
     lines = [
         "This is what you actually are, on this deployment:",
@@ -34,6 +37,11 @@ def describe_capabilities(config: Config, media_services: list[str]) -> str:
         schedule.append(
             f"a download check at {config.download_check_time.strftime('%H:%M')} that looks for stalled "
             "requests, queue warnings and dead torrents, and stays silent when the pipeline is healthy"
+        )
+    if config.server_check_time and server_sources:
+        schedule.append(
+            f"a server health check at {config.server_check_time.strftime('%H:%M')} covering drives, UPS, "
+            "disk space and service uptime, silent when everything is healthy"
         )
     if config.morning_summary_time:
         schedule.append(f"a morning summary at {config.morning_summary_time.strftime('%H:%M')}, which always posts")
@@ -65,6 +73,12 @@ def describe_capabilities(config: Config, media_services: list[str]) -> str:
         )
     else:
         lines.append("- No media tools are connected, so you cannot see Plex downloads or requests.")
+    if server_sources:
+        lines.append(
+            "- Server health readable: "
+            + ", ".join(server_sources)
+            + ". You can report on it but cannot change the server."
+        )
     lines.append("- You remember things across chats only via the remember tool; chat history resets when idle.")
     return "\n".join(lines)
 
@@ -88,7 +102,13 @@ async def main() -> None:
         if media is not None:
             answered = await media.check()
             logging.info("media tools on: %s", ", ".join(answered) or "none answered (check the URLs and keys)")
-        tools = HomeTools(ha, policy, config.workspace / "notes.md", extra=[media] if media else [])
+        server = ServerTools(config.server) if config.server.any else None
+        answered_server: list[str] = []
+        if server is not None:
+            answered_server = await server.check()
+            logging.info("server tools on: %s", ", ".join(answered_server) or "none answered (check the URLs)")
+        extra = [x for x in (media, server) if x is not None]
+        tools = HomeTools(ha, policy, config.workspace / "notes.md", extra=extra)
         agent = HomeAgent(
             AsyncAnthropic(),
             tools,
@@ -96,13 +116,15 @@ async def main() -> None:
             effort=config.effort,
             workspace=config.workspace,
             timezone=config.timezone,
-            capabilities=describe_capabilities(config, answered),
+            cache_ttl=config.cache_ttl,
+            capabilities=describe_capabilities(config, answered, answered_server),
         )
         try:
-            await run(config, agent, media_enabled=media is not None)
+            await run(config, agent, media_enabled=media is not None, server_enabled=server is not None)
         finally:
-            if media is not None:
-                await media.aclose()
+            for closeable in (media, server):
+                if closeable is not None:
+                    await closeable.aclose()
 
 
 if __name__ == "__main__":
