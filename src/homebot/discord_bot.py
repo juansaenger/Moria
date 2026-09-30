@@ -99,9 +99,12 @@ class HomeBot(discord.Client):
         self._media_enabled = media_enabled
 
     async def setup_hook(self) -> None:
-        nightly = NIGHTLY_PROMPT + ("\n\n" + DOWNLOADS_PROMPT if self._media_enabled else "")
+        # The house check belongs at night; the download check belongs in the
+        # morning, when there is time to act on what it finds.
+        downloads = self.config.download_check_time if self._media_enabled else None
         for when, prompt, silent_ok in (
-            (self.config.nightly_check_time, nightly, True),
+            (self.config.nightly_check_time, NIGHTLY_PROMPT, True),
+            (downloads, DOWNLOADS_PROMPT, True),
             (self.config.morning_summary_time, MORNING_PROMPT, False),
         ):
             if when is None:
