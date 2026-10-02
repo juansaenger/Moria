@@ -14,6 +14,7 @@ from .config import Config, ConfigError
 from .followups import FollowupStore, FollowupTools
 from .discord_bot import run
 from .media import MediaTools
+from .selfcode import SelfCodeTools
 from .server import ServerTools
 from .tools import HomeTools, SafetyPolicy
 
@@ -88,6 +89,15 @@ def describe_capabilities(
         "something in 30 minutes. It survives a restart and arrives as a message from 'Follow-up'. "
         "Use it instead of promising to check back, because you have no other way to act later."
     )
+    if config.repo.can_propose:
+        lines.append(
+            "- You can read your own source at " + config.repo.path + " and propose changes as a pull "
+            "request against " + config.repo.base_branch + " on " + config.repo.repo + ". Read a file before "
+            "changing it and send its complete new contents. The user is shown a diff and must approve "
+            "before anything is pushed. You cannot merge and cannot deploy."
+        )
+    elif config.repo.can_read:
+        lines.append("- You can read your own source but not propose changes; no GitHub token is set.")
     lines.append("- You remember things across chats only via the remember tool; chat history resets when idle.")
     return "\n".join(lines)
 
@@ -120,7 +130,13 @@ async def main() -> None:
         followup_tools = FollowupTools(followups, config.timezone)
         logging.info("follow-ups: %s pending", len(followups.all()))
         automations = AutomationTools(ha)
-        extra = [x for x in (media, server, followup_tools, automations) if x is not None]
+        selfcode = SelfCodeTools(config.repo)
+        if config.repo.can_propose:
+            logging.info('self-code: reading %s, can open pull requests against %s',
+                         config.repo.path, config.repo.base_branch)
+        elif config.repo.can_read:
+            logging.info('self-code: reading %s, read only (no GITHUB_TOKEN)', config.repo.path)
+        extra = [x for x in (media, server, followup_tools, automations, selfcode) if x is not None]
         tools = HomeTools(ha, policy, config.workspace / "notes.md", extra=extra)
         agent = HomeAgent(
             AsyncAnthropic(),

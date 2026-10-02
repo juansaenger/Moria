@@ -7,6 +7,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .media import MediaConfig
+from .selfcode import RepoConfig
 from .server import ServerConfig, parse_disk_paths
 
 
@@ -75,6 +76,7 @@ class Config:
     morning_summary_time: datetime.time | None
     media: MediaConfig = MediaConfig()
     server: ServerConfig = ServerConfig()
+    repo: RepoConfig = RepoConfig()
     approval_timeout_s: float = 300.0
     idle_reset_minutes: float = 30.0
 
@@ -133,5 +135,11 @@ class Config:
                 kuma_api_key=os.environ.get("UPTIMEKUMA_API_KEY", "").strip(),
                 disk_paths=parse_disk_paths(os.environ.get("DISK_PATHS", "/host/media=Media,/host/appdata=AppData")),
                 min_free_pct=float(os.environ.get("DISK_MIN_FREE_PCT", "10") or 10),
+            ),
+            repo=RepoConfig(
+                path=os.environ.get("REPO_PATH", "/repo").strip(),
+                token=os.environ.get("GITHUB_TOKEN", "").strip(),
+                repo=_opt("GITHUB_REPO"),
+                base_branch=_opt("GITHUB_BASE_BRANCH"),
             ),
         )

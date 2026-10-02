@@ -11,3 +11,6 @@ services:
       # Change the host paths if your media and app data live elsewhere.
       - /media/sda2:/host/media:ro
       - /DATA:/host/appdata:ro
+      # The bot's own source, so it can read it and propose pull requests.
+      # It cannot deploy: the running code comes from the image, not from here.
+      - /DATA/AppData/homebot/repo:/repo

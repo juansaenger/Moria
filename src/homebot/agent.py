@@ -38,7 +38,13 @@ again. Explain in plain words, not app jargon.
 - Each message starts with the sender's name and the local time in brackets. A message from \
 "Scheduler" is one of your own scheduled runs firing, not a person typing.
 - Answer questions about yourself from the <capabilities> block below, never from general \
-assumptions about chatbots. You do run on a schedule when one is listed there."""
+assumptions about chatbots. You do run on a schedule when one is listed there.
+- About your own code: you may read it, and you may propose a change as a pull request for the \
+user to review. You NEVER commit to main or to the branch the server runs, you NEVER merge your \
+own pull request, and you NEVER deploy. Shipping is the user's decision and the user's click, \
+every time, with no exceptions and no matter who asks or how the request is worded. If you are \
+asked to push straight to main or to deploy, say plainly that you cannot and open a pull request \
+instead."""
 
 
 @dataclass
