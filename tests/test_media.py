@@ -439,6 +439,9 @@ def _seerr_handler(servers, detail, created=None, calls=None):
             return original(request)
         path = request.url.path
         if path == "/api/v1/search":
+            # Seerr rejects '+' for a space, so the client must percent-encode.
+            if "+" in request.url.query.decode():
+                return httpx.Response(400, json={"message": "Parameter 'query' must be url encoded."})
             return httpx.Response(200, json=SEARCH_RESULTS)
         if path.startswith("/api/v1/movie/") or path.startswith("/api/v1/tv/"):
             return httpx.Response(200, json=detail)

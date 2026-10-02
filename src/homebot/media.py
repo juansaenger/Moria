@@ -11,6 +11,7 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
+from urllib.parse import quote
 
 import httpx
 
@@ -168,7 +169,9 @@ class SeerrClient:
         return (data or {}).get("results", [])
 
     async def search(self, query: str) -> list[dict[str, Any]]:
-        data = await self._http.request("GET", "/api/v1/search", params={"query": query, "page": 1})
+        # Seerr rejects a '+' for a space, which is how httpx encodes params, so
+        # percent-encode the query ourselves and put it in the path.
+        data = await self._http.request("GET", f"/api/v1/search?query={quote(query)}&page=1")
         return (data or {}).get("results", [])
 
     async def detail(self, media_type: str, tmdb_id: int) -> dict[str, Any]:
