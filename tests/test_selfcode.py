@@ -26,10 +26,15 @@ class Approver:
         return self.answer
 
 
+class RepoPath(type(Path())):  # type: ignore[misc]
+    """A Path that also remembers where its origin lives."""
+    bare_origin: str
+
+
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
     """A real git repo, because the tool shells out to real git."""
-    root = tmp_path / "repo"
+    root = RepoPath(tmp_path / "repo")
     root.mkdir()
     env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1")
     run = lambda *a: subprocess.run(["git", "-C", str(root), *a], check=True, capture_output=True, env=env)
@@ -52,6 +57,7 @@ def repo(tmp_path: Path) -> Path:
     run("remote", "add", "origin", str(bare))
     run("push", "-q", "origin", "work")
     run("fetch", "-q", "origin")
+    root.bare_origin = str(bare)  # type: ignore[attr-defined]
     return root
 
 
@@ -136,9 +142,11 @@ async def test_a_denied_proposal_pushes_nothing(repo, monkeypatch):
     real = __import__("homebot.selfcode", fromlist=["git"]).git
 
     async def fake_git(root, *args, **kw):
-        if args[0] in ("push", "fetch"):
+        if args[0] == "push":
             pushed.append(args)
             return ""
+        if args[0] == "fetch":
+            return await real(root, "fetch", "--quiet", repo.bare_origin, "work")
         return await real(root, *args, **kw)
 
     monkeypatch.setattr("homebot.selfcode.git", fake_git)
@@ -160,8 +168,10 @@ async def test_the_approval_shows_a_diff_and_the_branch(repo, monkeypatch):
     real = __import__("homebot.selfcode", fromlist=["git"]).git
 
     async def fake_git(root, *args, **kw):
-        if args[0] in ("push", "fetch"):
+        if args[0] == "push":
             return ""
+        if args[0] == "fetch":
+            return await real(root, "fetch", "--quiet", repo.bare_origin, "work")
         return await real(root, *args, **kw)
 
     monkeypatch.setattr("homebot.selfcode.git", fake_git)
@@ -182,8 +192,10 @@ async def test_a_no_op_change_is_refused_before_bothering_the_user(repo, monkeyp
     real = __import__("homebot.selfcode", fromlist=["git"]).git
 
     async def fake_git(root, *args, **kw):
-        if args[0] in ("push", "fetch"):
+        if args[0] == "push":
             return ""
+        if args[0] == "fetch":
+            return await real(root, "fetch", "--quiet", repo.bare_origin, "work")
         return await real(root, *args, **kw)
 
     monkeypatch.setattr("homebot.selfcode.git", fake_git)
@@ -256,3 +268,80 @@ async def test_a_failed_git_command_does_not_leak_the_token(repo, monkeypatch):
     with pytest.raises(SelfCodeError) as caught:
         await git(repo, "push", url, "HEAD:refs/heads/nope", token_url=url)
     assert "supersecret" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_the_server_checkout_is_never_written_to(repo, monkeypatch):
+    """The whole point of the rewrite: proposing must need only read access."""
+    import os as _os
+    import stat as _stat
+
+    real = __import__("homebot.selfcode", fromlist=["git"]).git
+
+    async def fake_git(root, *args, **kw):
+        if args[0] == "push":
+            return ""
+        if args[0] == "fetch":
+            return await real(root, "fetch", "--quiet", repo.bare_origin, "work")
+        return await real(root, *args, **kw)
+
+    monkeypatch.setattr("homebot.selfcode.git", fake_git)
+
+    async def fake_pr(self, branch, title, body):
+        return f"https://github.test/pull/1 ({branch})"
+
+    monkeypatch.setattr(SelfCodeTools, "_open_pr", fake_pr)
+
+    before = {}
+    for path in sorted(repo.rglob("*")):
+        try:
+            before[str(path)] = path.stat().st_mtime_ns
+        except OSError:
+            pass
+
+    approver = Approver(True)
+    out = await _full(repo).run(
+        "propose_change",
+        {"branch": "jarvis/readonly", "title": "T", "body": "B",
+         "files": [{"path": "src/thing.py", "content": "value = 7\n"}]},
+        approver,
+    )
+    assert "pull request" in out or "Pushed" in out
+
+    after = {}
+    for path in sorted(repo.rglob("*")):
+        try:
+            after[str(path)] = path.stat().st_mtime_ns
+        except OSError:
+            pass
+    assert after == before, "the checkout on the server was modified"
+    # And the branch exists only on the remote, never in the server's checkout.
+    branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list"], capture_output=True, text=True
+    ).stdout
+    assert "jarvis/readonly" not in branches
+
+
+@pytest.mark.asyncio
+async def test_the_scratch_clone_is_cleaned_up_even_on_failure(repo, monkeypatch):
+    import tempfile as _tempfile
+
+    real = __import__("homebot.selfcode", fromlist=["git"]).git
+
+    async def fake_git(root, *args, **kw):
+        if args[0] == "fetch":
+            return await real(root, "fetch", "--quiet", repo.bare_origin, "work")
+        if args[0] == "push":
+            raise SelfCodeError("push exploded")
+        return await real(root, *args, **kw)
+
+    monkeypatch.setattr("homebot.selfcode.git", fake_git)
+    before = set(Path(_tempfile.gettempdir()).glob("homebot-proposal-*"))
+    with pytest.raises(SelfCodeError, match="push exploded"):
+        await _full(repo).run(
+            "propose_change",
+            {"branch": "jarvis/boom", "title": "T", "body": "B",
+             "files": [{"path": "src/thing.py", "content": "value = 8\n"}]},
+            Approver(True),
+        )
+    assert set(Path(_tempfile.gettempdir()).glob("homebot-proposal-*")) == before

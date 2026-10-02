@@ -18,6 +18,8 @@ import asyncio
 import logging
 import os
 import re
+import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -83,6 +85,20 @@ def safe_relative(repo_root: Path, candidate: str) -> Path:
     return relative
 
 
+def _remove_tree(path: Path) -> None:
+    """Delete a scratch clone. git leaves object files read-only, which stops a
+    plain rmtree on some platforms, so make them writable and try again."""
+
+    def retry(func: Any, target: Any, _exc: Any) -> None:
+        try:
+            os.chmod(target, 0o700)
+            func(target)
+        except OSError:
+            log.warning("could not remove %s", target)
+
+    shutil.rmtree(path, onerror=retry)
+
+
 def check_branch(name: str, base: str) -> str:
     name = (name or "").strip()
     if not BRANCH_PATTERN.fullmatch(name):
@@ -104,9 +120,11 @@ async def git(repo: Path, *args: str, token_url: str | None = None) -> str:
         GIT_TERMINAL_PROMPT="0",
         GIT_ASKPASS="",
         GIT_CONFIG_NOSYSTEM="1",
-        GIT_CONFIG_COUNT="1",
+        GIT_CONFIG_COUNT="2",
         GIT_CONFIG_KEY_0="safe.directory",
         GIT_CONFIG_VALUE_0=str(repo),
+        GIT_CONFIG_KEY_1="safe.directory",
+        GIT_CONFIG_VALUE_1=tempfile.gettempdir() + "/*",
     )
     proc = await asyncio.create_subprocess_exec(
         "git", "-C", str(repo), *args,
@@ -288,30 +306,38 @@ class SelfCodeTools:
             raise SelfCodeError("title is required")
         files = self._clean_files(tool_input.get("files"))
 
-        await git(self._root, "fetch", "--quiet", "origin", cfg.base_branch)
-        worktree = Path(f"/tmp/homebot-proposal-{os.getpid()}-{branch.replace('/', '-')}")
-        await self._cleanup(worktree, branch)
-        await git(self._root, "worktree", "add", "--quiet", "-b", branch, str(worktree),
-                  f"origin/{cfg.base_branch}")
+        # Work in a throwaway clone, never in the checkout on the server. That
+        # checkout belongs to the host user and to the deploy watcher; writing to
+        # its .git needed permissions the container has no business holding, and
+        # a half-finished proposal could have left the next deploy reading a
+        # dirty tree. Cloning needs only read access to it.
+        url = f"https://x-access-token:{cfg.token}@github.com/{cfg.repo}.git"
+        scratch = Path(tempfile.mkdtemp(prefix="homebot-proposal-"))
+        clone = scratch / "work"
         try:
+            await git(self._root, "clone", "--quiet", "--no-checkout", str(self._root), str(clone))
+            # Branch from what GitHub has right now, not from whatever the
+            # server last pulled, so a stale checkout cannot silently rebase the
+            # proposal onto an old base.
+            await git(clone, "fetch", "--quiet", url, cfg.base_branch, token_url=url)
+            await git(clone, "checkout", "--quiet", "-b", branch, "FETCH_HEAD")
             for rel, content in files:
-                target = worktree / rel
+                target = clone / rel
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(content, encoding="utf-8", newline="\n")
-            await git(worktree, "add", "--", *(rel for rel, _ in files))
-            diff_stat = await git(worktree, "diff", "--cached", "--stat")
+            await git(clone, "add", "--", *(rel for rel, _ in files))
+            diff_stat = await git(clone, "diff", "--cached", "--stat")
             if not diff_stat.strip():
                 raise SelfCodeError("That changes nothing: the files already have exactly those contents.")
-            patch = await git(worktree, "diff", "--cached")
+            patch = await git(clone, "diff", "--cached")
             summary = self._summarise(branch, title, files, diff_stat, patch)
             if not await approve(summary):
                 return "The user DENIED this change (or did not answer in time). Nothing was pushed."
-            await git(worktree, "-c", "user.name=Jarvis", "-c", "user.email=jarvis@localhost",
+            await git(clone, "-c", "user.name=Jarvis", "-c", "user.email=jarvis@localhost",
                       "commit", "--quiet", "-m", title, "-m", body or "Proposed from Discord.")
-            url = f"https://x-access-token:{cfg.token}@github.com/{cfg.repo}.git"
-            await git(worktree, "push", "--quiet", url, f"HEAD:refs/heads/{branch}", token_url=url)
+            await git(clone, "push", "--quiet", url, f"HEAD:refs/heads/{branch}", token_url=url)
         finally:
-            await self._cleanup(worktree, branch)
+            _remove_tree(scratch)
         pr = await self._open_pr(branch, title, body)
         return f"Pushed {branch} and opened a pull request: {pr}. Review and merge it yourself; I cannot."
 
@@ -324,17 +350,6 @@ class SelfCodeTools:
             f"```\n{stat.strip()}\n```\n"
             f"```diff\n{chr(10).join(lines)}\n```"
         )
-
-    async def _cleanup(self, worktree: Path, branch: str) -> None:
-        for args in (("worktree", "remove", "--force", str(worktree)), ("branch", "-D", branch)):
-            try:
-                await git(self._root, *args)
-            except SelfCodeError:
-                pass  # it was not there, which is the state we wanted
-        try:
-            await git(self._root, "worktree", "prune")
-        except SelfCodeError:
-            pass
 
     async def _open_pr(self, branch: str, title: str, body: str) -> str:
         cfg = self._config
