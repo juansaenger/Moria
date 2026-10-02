@@ -9,12 +9,18 @@ from discord.ext import tasks
 
 from .agent import Conversation, HomeAgent
 from .config import Config
+from .followups import FollowupStore
 
 log = logging.getLogger(__name__)
 
 DISCORD_LIMIT = 2000
 RESET_COMMANDS = {"!reset", "!new"}
 NOTHING_TO_REPORT = "NOTHING_TO_REPORT"
+FOLLOWUP_POLL_SECONDS = 30
+FOLLOWUP_PREFIX = (
+    "This is a follow-up you scheduled earlier, firing now. Nobody is asking; you asked yourself. "
+    "Do it, then say what you found in a line or two. Your instruction to yourself was: "
+)
 
 NIGHTLY_PROMPT = f"""\
 Scheduled nightly check. Look for anything left on or open that shouldn't be at night: \
@@ -96,8 +102,14 @@ class ApprovalView(discord.ui.View):
 
 class HomeBot(discord.Client):
     def __init__(
-        self, config: Config, agent: HomeAgent, media_enabled: bool = False, server_enabled: bool = False
+        self,
+        config: Config,
+        agent: HomeAgent,
+        media_enabled: bool = False,
+        server_enabled: bool = False,
+        followups: FollowupStore | None = None,
     ) -> None:
+        self._followups = followups
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(intents=intents)
@@ -126,6 +138,12 @@ class HomeBot(discord.Client):
             loop.start()
             self._routines.append(loop)
             log.info("routine scheduled at %s", when.strftime("%H:%M %Z"))
+        if self._followups is not None:
+            ticker = tasks.loop(seconds=FOLLOWUP_POLL_SECONDS)(self._deliver_followups)
+            ticker.start()
+            self._routines.append(ticker)
+            pending = len(self._followups.all())
+            log.info("follow-ups on, %s pending", pending)
 
     async def on_ready(self) -> None:
         log.info("logged in as %s; listening in channel %s", self.user, self.config.channel_id)
@@ -177,6 +195,32 @@ class HomeBot(discord.Client):
         for chunk in split_message(reply):
             await message.channel.send(chunk)
 
+    async def _deliver_followups(self) -> None:
+        assert self._followups is not None
+        due = self._followups.pop_due()
+        if not due:
+            return
+        channel = self._channel()
+        if channel is None:
+            log.error("follow-up skipped: channel %s not found", self.config.channel_id)
+            return
+        for item in due:
+            log.info("delivering follow-up %s: %s", item.id, item.message)
+            async with self._lock:
+                convo = self.agent.new_conversation()
+                try:
+                    reply = await self.agent.ask(
+                        convo, "Follow-up", FOLLOWUP_PREFIX + item.message, self._approver(channel)
+                    )
+                except Exception:
+                    log.exception("follow-up %s failed", item.id)
+                    reply = f"A follow-up failed: {item.message}"
+                else:
+                    # Let the user reply to it with context, like a routine.
+                    self._conversation = convo
+            for chunk in split_message(reply):
+                await channel.send(chunk)
+
     def _make_routine(self, prompt: str, silent_ok: bool):
         async def routine() -> None:
             channel = self._channel()
@@ -202,8 +246,12 @@ class HomeBot(discord.Client):
 
 
 async def run(
-    config: Config, agent: HomeAgent, media_enabled: bool = False, server_enabled: bool = False
+    config: Config,
+    agent: HomeAgent,
+    media_enabled: bool = False,
+    server_enabled: bool = False,
+    followups: FollowupStore | None = None,
 ) -> None:
-    bot = HomeBot(config, agent, media_enabled, server_enabled)
+    bot = HomeBot(config, agent, media_enabled, server_enabled, followups)
     async with bot:
         await bot.start(config.discord_token)

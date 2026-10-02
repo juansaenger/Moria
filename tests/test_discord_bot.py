@@ -49,6 +49,7 @@ async def test_house_and_download_checks_are_separate_routines(monkeypatch):
     bot._routines = []
     bot._media_enabled = True
     bot._server_enabled = True
+    bot._followups = None
     await db.HomeBot.setup_hook(bot)
     assert sorted(x.strftime("%H:%M") for x in started) == ["08:45", "09:00", "22:30"]
 
@@ -73,3 +74,39 @@ def test_each_routine_prompt_targets_its_own_tool():
     assert "stalled_media" in db.DOWNLOADS_PROMPT
     assert "server_health" in db.SERVER_PROMPT
     assert "server_health" not in db.NIGHTLY_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_followup_ticker_only_starts_when_there_is_a_store(monkeypatch, tmp_path):
+    from homebot import discord_bot as db
+    from homebot.followups import FollowupStore
+
+    seconds: list[float] = []
+
+    class FakeLoop:
+        def start(self):
+            pass
+
+    def fake_loop(time=None, seconds=None, **kw):
+        if seconds is not None:
+            globals().setdefault("_seen", []).append(seconds)
+        return lambda func: FakeLoop()
+
+    started: list[object] = []
+    monkeypatch.setattr(db.tasks, "loop", lambda **kw: (started.append(kw) or (lambda f: FakeLoop())))
+    bot = db.HomeBot.__new__(db.HomeBot)
+    bot.config = types.SimpleNamespace(
+        nightly_check_time=None, download_check_time=None, server_check_time=None, morning_summary_time=None
+    )
+    bot._routines = []
+    bot._media_enabled = False
+    bot._server_enabled = False
+
+    bot._followups = None
+    await db.HomeBot.setup_hook(bot)
+    assert started == []
+
+    bot._routines = []
+    bot._followups = FollowupStore(tmp_path / "f.json")
+    await db.HomeBot.setup_hook(bot)
+    assert started == [{"seconds": db.FOLLOWUP_POLL_SECONDS}]

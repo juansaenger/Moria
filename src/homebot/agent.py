@@ -98,6 +98,7 @@ class HomeAgent:
         convo.messages.append({"role": "user", "content": f"[{sender}, {now}] {text}"})
         convo.last_active = time.monotonic()
 
+        self._sender = sender
         for _ in range(MAX_TOOL_ROUNDS):
             response = await self._create(convo)
             _log_cache(response)
@@ -147,7 +148,9 @@ class HomeAgent:
     async def _run_tool(self, block: Any, approve: Approver) -> dict[str, Any]:
         log.info("tool %s %s", block.name, block.input)
         try:
-            output = await self._tools.run(block.name, dict(block.input or {}), approve)
+            tool_input = dict(block.input or {})
+            tool_input.setdefault("_sender", getattr(self, "_sender", "you"))
+            output = await self._tools.run(block.name, tool_input, approve)
             return {"type": "tool_result", "tool_use_id": block.id, "content": output}
         except ToolError as exc:
             log.warning("tool %s failed: %s", block.name, exc)

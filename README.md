@@ -87,3 +87,11 @@ Code layout:
 - `src/homebot/agent.py`: the Claude tool-use loop
 - `src/homebot/discord_bot.py`: the Discord front end, approval buttons and routines
 - `src/ha_mcp/ha_client.py`: the Home Assistant REST client
+
+## Follow-ups
+
+The bot can schedule a one-off check for itself, for example "see whether that
+torrent started in 30 minutes". Pending follow-ups live in
+`workspace/followups.json`, so they survive a restart or a rebuild, and arrive as
+a message from "Follow-up". Ask it to list or cancel them in plain language.
+No new settings: times use the `TZ` you already set.

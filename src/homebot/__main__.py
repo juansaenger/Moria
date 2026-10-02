@@ -10,6 +10,7 @@ from ha_mcp.ha_client import HomeAssistantClient, HomeAssistantError
 
 from .agent import HomeAgent
 from .config import Config, ConfigError
+from .followups import FollowupStore, FollowupTools
 from .discord_bot import run
 from .media import MediaTools
 from .server import ServerTools
@@ -79,6 +80,11 @@ def describe_capabilities(
             + ", ".join(server_sources)
             + ". You can report on it but cannot change the server."
         )
+    lines.append(
+        "- You can schedule a one-off follow-up for yourself with schedule_followup, e.g. to re-check "
+        "something in 30 minutes. It survives a restart and arrives as a message from 'Follow-up'. "
+        "Use it instead of promising to check back, because you have no other way to act later."
+    )
     lines.append("- You remember things across chats only via the remember tool; chat history resets when idle.")
     return "\n".join(lines)
 
@@ -107,7 +113,10 @@ async def main() -> None:
         if server is not None:
             answered_server = await server.check()
             logging.info("server tools on: %s", ", ".join(answered_server) or "none answered (check the URLs)")
-        extra = [x for x in (media, server) if x is not None]
+        followups = FollowupStore(config.workspace / "followups.json")
+        followup_tools = FollowupTools(followups, config.timezone)
+        logging.info("follow-ups: %s pending", len(followups.all()))
+        extra = [x for x in (media, server, followup_tools) if x is not None]
         tools = HomeTools(ha, policy, config.workspace / "notes.md", extra=extra)
         agent = HomeAgent(
             AsyncAnthropic(),
@@ -120,7 +129,13 @@ async def main() -> None:
             capabilities=describe_capabilities(config, answered, answered_server),
         )
         try:
-            await run(config, agent, media_enabled=media is not None, server_enabled=server is not None)
+            await run(
+                config,
+                agent,
+                media_enabled=media is not None,
+                server_enabled=server is not None,
+                followups=followups,
+            )
         finally:
             for closeable in (media, server):
                 if closeable is not None:
