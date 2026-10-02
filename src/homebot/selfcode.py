@@ -120,11 +120,17 @@ async def git(repo: Path, *args: str, token_url: str | None = None) -> str:
         GIT_TERMINAL_PROMPT="0",
         GIT_ASKPASS="",
         GIT_CONFIG_NOSYSTEM="1",
-        GIT_CONFIG_COUNT="2",
+        GIT_CONFIG_COUNT="4",
         GIT_CONFIG_KEY_0="safe.directory",
         GIT_CONFIG_VALUE_0=str(repo),
+        # Cloning reads the .git directory directly, and git checks that path
+        # separately from the work tree it sits in.
         GIT_CONFIG_KEY_1="safe.directory",
-        GIT_CONFIG_VALUE_1=tempfile.gettempdir() + "/*",
+        GIT_CONFIG_VALUE_1=str(Path(repo) / ".git"),
+        GIT_CONFIG_KEY_2="safe.directory",
+        GIT_CONFIG_VALUE_2=tempfile.gettempdir() + "/*",
+        GIT_CONFIG_KEY_3="safe.directory",
+        GIT_CONFIG_VALUE_3=str(repo) + "/*",
     )
     proc = await asyncio.create_subprocess_exec(
         "git", "-C", str(repo), *args,
