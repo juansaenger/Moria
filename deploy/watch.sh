@@ -61,8 +61,11 @@ git -C "$REPO" reset --quiet --hard "origin/$BRANCH"
 
 # Tests first, in a throwaway container, so a broken merge never reaches the house.
 say "running tests"
-if ! docker run --rm -v "$REPO:/src:ro" -w /src "$TEST_IMAGE" \
-        sh -c 'pip install -q -e ".[dev]" >/dev/null 2>&1 && python -m pytest -q' >> "$LOG" 2>&1; then
+# Copy into the container before installing: the mount stays read-only, so a
+# test run can never write to the checkout the next deploy reads from.
+if ! docker run --rm -v "$REPO:/src:ro" "$TEST_IMAGE" \
+        sh -c 'cp -r /src /build && cd /build && pip install -q ".[dev]" && python -m pytest -q' \
+        >> "$LOG" 2>&1; then
     say "TESTS FAILED, not deploying"
     discord "Did not deploy \`$SHORT\` ($SUBJECT): the tests failed. Nothing changed; I am still on the previous build."
     echo "$TARGET" > "$STATE.failed"
