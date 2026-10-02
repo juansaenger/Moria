@@ -63,8 +63,10 @@ git -C "$REPO" reset --quiet --hard "origin/$BRANCH"
 say "running tests"
 # Copy into the container before installing: the mount stays read-only, so a
 # test run can never write to the checkout the next deploy reads from.
+# git is needed because the self-code tests drive a real repository.
 if ! docker run --rm -v "$REPO:/src:ro" "$TEST_IMAGE" \
-        sh -c 'cp -r /src /build && cd /build && pip install -q ".[dev]" && python -m pytest -q' \
+        sh -c 'apt-get update -qq && apt-get install -y -qq --no-install-recommends git >/dev/null \
+               && cp -r /src /build && cd /build && pip install -q ".[dev]" && python -m pytest -q' \
         >> "$LOG" 2>&1; then
     say "TESTS FAILED, not deploying"
     discord "Did not deploy \`$SHORT\` ($SUBJECT): the tests failed. Nothing changed; I am still on the previous build."
