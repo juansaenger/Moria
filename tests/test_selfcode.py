@@ -145,8 +145,9 @@ async def test_a_denied_proposal_pushes_nothing(repo, monkeypatch):
         if args[0] == "push":
             pushed.append(args)
             return ""
-        if args[0] == "fetch":
-            return await real(root, "fetch", "--quiet", repo.bare_origin, "work")
+        if args[0] == "clone":
+            dest = args[-1]
+            return await real(root, "clone", "--quiet", "--branch", "work", repo.bare_origin, dest)
         return await real(root, *args, **kw)
 
     monkeypatch.setattr("homebot.selfcode.git", fake_git)
@@ -170,8 +171,9 @@ async def test_the_approval_shows_a_diff_and_the_branch(repo, monkeypatch):
     async def fake_git(root, *args, **kw):
         if args[0] == "push":
             return ""
-        if args[0] == "fetch":
-            return await real(root, "fetch", "--quiet", repo.bare_origin, "work")
+        if args[0] == "clone":
+            dest = args[-1]
+            return await real(root, "clone", "--quiet", "--branch", "work", repo.bare_origin, dest)
         return await real(root, *args, **kw)
 
     monkeypatch.setattr("homebot.selfcode.git", fake_git)
@@ -194,8 +196,9 @@ async def test_a_no_op_change_is_refused_before_bothering_the_user(repo, monkeyp
     async def fake_git(root, *args, **kw):
         if args[0] == "push":
             return ""
-        if args[0] == "fetch":
-            return await real(root, "fetch", "--quiet", repo.bare_origin, "work")
+        if args[0] == "clone":
+            dest = args[-1]
+            return await real(root, "clone", "--quiet", "--branch", "work", repo.bare_origin, dest)
         return await real(root, *args, **kw)
 
     monkeypatch.setattr("homebot.selfcode.git", fake_git)
@@ -281,8 +284,9 @@ async def test_the_server_checkout_is_never_written_to(repo, monkeypatch):
     async def fake_git(root, *args, **kw):
         if args[0] == "push":
             return ""
-        if args[0] == "fetch":
-            return await real(root, "fetch", "--quiet", repo.bare_origin, "work")
+        if args[0] == "clone":
+            dest = args[-1]
+            return await real(root, "clone", "--quiet", "--branch", "work", repo.bare_origin, dest)
         return await real(root, *args, **kw)
 
     monkeypatch.setattr("homebot.selfcode.git", fake_git)
@@ -329,8 +333,9 @@ async def test_the_scratch_clone_is_cleaned_up_even_on_failure(repo, monkeypatch
     real = __import__("homebot.selfcode", fromlist=["git"]).git
 
     async def fake_git(root, *args, **kw):
-        if args[0] == "fetch":
-            return await real(root, "fetch", "--quiet", repo.bare_origin, "work")
+        if args[0] == "clone":
+            dest = args[-1]
+            return await real(root, "clone", "--quiet", "--branch", "work", repo.bare_origin, dest)
         if args[0] == "push":
             raise SelfCodeError("push exploded")
         return await real(root, *args, **kw)

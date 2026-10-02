@@ -321,12 +321,15 @@ class SelfCodeTools:
         scratch = Path(tempfile.mkdtemp(prefix="homebot-proposal-"))
         clone = scratch / "work"
         try:
-            await git(self._root, "clone", "--quiet", "--no-checkout", str(self._root), str(clone))
-            # Branch from what GitHub has right now, not from whatever the
-            # server last pulled, so a stale checkout cannot silently rebase the
-            # proposal onto an old base.
-            await git(clone, "fetch", "--quiet", url, cfg.base_branch, token_url=url)
-            await git(clone, "checkout", "--quiet", "-b", branch, "FETCH_HEAD")
+            # Clone from GitHub, not from the checkout on the server. That keeps
+            # the base exactly what the reviewer will see in the pull request,
+            # and means proposing needs nothing at all from the server's copy,
+            # which git refuses to read anyway when its owner differs.
+            await git(
+                scratch, "clone", "--quiet", "--depth", "1",
+                "--branch", cfg.base_branch, url, str(clone), token_url=url,
+            )
+            await git(clone, "checkout", "--quiet", "-b", branch)
             for rel, content in files:
                 target = clone / rel
                 target.parent.mkdir(parents=True, exist_ok=True)
