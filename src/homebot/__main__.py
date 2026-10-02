@@ -66,6 +66,7 @@ def describe_capabilities(
             + ", ".join(config.sensitive_keywords)
             + " need the user to tap Approve first. You cannot bypass that."
         )
+    lines.append("- When several sensitive actions are needed at once, they are offered as ONE approval message listing every item, and the user can approve all, approve a selection, or deny. Ask for the whole set in one turn rather than drip-feeding them.")
     if media_services:
         lines.append(
             "- Media stack connected: "

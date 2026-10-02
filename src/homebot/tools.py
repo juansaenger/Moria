@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
@@ -14,6 +15,8 @@ from .server import ServerError
 
 # Called with a human-readable description of a sensitive action; returns True if approved.
 Approver = Callable[[str], Awaitable[bool]]
+
+log = logging.getLogger(__name__)
 
 MAX_LISTED_ENTITIES = 150
 MAX_HISTORY_POINTS = 60
@@ -141,6 +144,10 @@ class ToolSet(Protocol):
 
     async def run(self, name: str, tool_input: dict[str, Any], approve: Approver) -> str: ...
 
+    async def preview(self, name: str, tool_input: dict[str, Any]) -> str | None:
+        """Optional. The approval this call would ask for, or None if it needs none."""
+        ...
+
 
 class HomeTools:
     def __init__(
@@ -221,6 +228,48 @@ class HomeTools:
         lines = [f"{p.get('last_changed', '?')}  {p.get('state')}" for p in points]
         return "\n".join(lines) or f"No changes for {entity_id} in the last {hours:g} hours."
 
+    async def preview(self, name: str, tool_input: dict[str, Any]) -> str | None:
+        """What this call would ask the user to approve, without performing it."""
+        for toolset in self._extra:
+            if name in toolset.names:
+                previewer = getattr(toolset, "preview", None)
+                if previewer is None:
+                    return None
+                try:
+                    return await previewer(name, tool_input)
+                except Exception:
+                    log.exception("preview of %s failed", name)
+                    return None
+        if name != "call_service":
+            return None
+        try:
+            domain = _str(tool_input, "domain").lower()
+            service = _str(tool_input, "service").lower()
+            entity_ids = tool_input.get("entity_ids")
+            if not isinstance(entity_ids, list) or not entity_ids:
+                return None
+            if domain not in self._policy.allowed_domains:
+                return None
+            names = {}
+            for entity_id in entity_ids:
+                state = await self._ha.get_state(entity_id)
+                names[entity_id] = str(state.get("attributes", {}).get("friendly_name", entity_id))
+        except (ToolError, HomeAssistantError):
+            return None
+        if not self._is_sensitive(domain, names):
+            return None
+        return self._service_summary(domain, service, entity_ids, names, tool_input.get("data") or {})
+
+    @staticmethod
+    def _service_summary(
+        domain: str, service: str, entity_ids: list[str], names: dict[str, str], data: dict[str, Any]
+    ) -> str:
+        targets = ", ".join(f"{names[e]} ({e})" for e in entity_ids)
+        summary = f"{domain}.{service} on {targets}"
+        if data:
+            summary += f" with {json.dumps(data)}"
+        return summary
+
     async def _call_service(self, tool_input: dict[str, Any], approve: Approver) -> str:
         domain = _str(tool_input, "domain").lower()
         service = _str(tool_input, "service").lower()
@@ -241,10 +290,7 @@ class HomeTools:
             names[entity_id] = str(state.get("attributes", {}).get("friendly_name", entity_id))
 
         if self._is_sensitive(domain, names):
-            targets = ", ".join(f"{names[e]} ({e})" for e in entity_ids)
-            summary = f"{domain}.{service} on {targets}"
-            if data:
-                summary += f" with {json.dumps(data)}"
+            summary = self._service_summary(domain, service, entity_ids, names, data)
             if not await approve(summary):
                 return "The user DENIED this action (or did not answer in time). It was not performed."
 

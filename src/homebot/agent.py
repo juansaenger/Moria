@@ -115,13 +115,36 @@ class HomeAgent:
             if response.stop_reason != "tool_use" or not tool_uses:
                 return _text_of(response) or "Done."
 
+            decisions = await self._pre_approve(tool_uses, approve)
             results = []
             for block in tool_uses:
-                results.append(await self._run_tool(block, approve))
+                results.append(await self._run_tool(block, _settled(approve, decisions.get(block.id))))
             convo.messages.append({"role": "user", "content": results})
             convo.last_active = time.monotonic()
 
         return "I stopped after too many steps. Try asking in a simpler way."
+
+    async def _pre_approve(self, tool_uses: list[Any], approve: Approver) -> dict[str, bool]:
+        """Ask once for every approval this round needs, instead of once each.
+
+        Claude often asks for a dozen deletes in a single turn. Prompting per item
+        buries the user in messages and makes it impossible to see the whole set
+        before saying yes. Anything the toolsets cannot preview falls through to
+        the old per-item prompt inside the tool itself.
+        """
+        asking_for: list[tuple[str, str]] = []
+        for block in tool_uses:
+            try:
+                summary = await self._tools.preview(block.name, dict(block.input or {}))
+            except Exception:
+                log.exception("preview of %s failed", block.name)
+                summary = None
+            if summary:
+                asking_for.append((block.id, summary))
+        if len(asking_for) < 2 or not hasattr(approve, "many"):
+            return {}
+        verdicts = await approve.many([s for _, s in asking_for])
+        return {block_id: verdict for (block_id, _), verdict in zip(asking_for, verdicts)}
 
     async def _create(self, convo: Conversation) -> Any:
         params: dict[str, Any] = {
@@ -159,6 +182,17 @@ class HomeAgent:
             log.exception("tool %s crashed", block.name)
             message = "The tool failed unexpectedly."
         return {"type": "tool_result", "tool_use_id": block.id, "content": message, "is_error": True}
+
+
+def _settled(approve: Approver, decision: bool | None) -> Approver:
+    """An approver that already knows the answer, so the user is not asked twice."""
+    if decision is None:
+        return approve
+
+    async def already(_summary: str) -> bool:
+        return decision
+
+    return already
 
 
 def _log_cache(response: Any) -> None:

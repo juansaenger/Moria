@@ -1006,6 +1006,41 @@ class MediaTools:
         await client.command(payload)
         return f"{client.name} is searching now ({payload['name']}). Check download_queue in a couple of minutes; if nothing appears, use find_releases."
 
+    def _remove_summary(self, tool_input: dict[str, Any]) -> str:
+        client = self._client(tool_input)
+        title = _str(tool_input, "title")
+        blocklist = bool(tool_input.get("blocklist", True))
+        remove_from_client = bool(tool_input.get("remove_from_client", True))
+        return (
+            f"remove {title} from the {client.name} queue"
+            + (", delete it from the torrent client" if remove_from_client else "")
+            + (", and blocklist it" if blocklist else "")
+        )
+
+    def _torrent_summary(self, tool_input: dict[str, Any]) -> str:
+        torrent_hash = _str(tool_input, "hash")
+        name = tool_input.get("name") or torrent_hash[:8]
+        delete_files = bool(tool_input.get("delete_files", False))
+        return f"delete torrent {name}" + (" AND its files" if delete_files else " (keep files)")
+
+    async def preview(self, name: str, tool_input: dict[str, Any]) -> str | None:
+        """What this call would ask the user to approve, without doing anything.
+
+        Returning None means it needs no approval. Used to gather every approval
+        a round of tool calls needs into one Discord message."""
+        try:
+            if name == "remove_download":
+                return self._remove_summary(tool_input)
+            if name == "torrent_action" and str(tool_input.get("action", "")).lower() == "delete":
+                return self._torrent_summary(tool_input)
+            if name == "grab_release":
+                size = float(tool_input.get("size_gb") or 0)
+                if size >= BIG_GRAB_GB:
+                    return f"grab {tool_input.get('title')} ({size:.0f}GB)"
+        except MediaError:
+            return None  # a malformed call fails later, with a better message
+        return None
+
     async def _remove_download(self, tool_input: dict[str, Any], approve: Approver) -> str:
         client = self._client(tool_input)
         queue_id = _int(tool_input, "queue_id")
@@ -1013,7 +1048,7 @@ class MediaTools:
         blocklist = bool(tool_input.get("blocklist", True))
         remove_from_client = bool(tool_input.get("remove_from_client", True))
         assert queue_id is not None
-        detail = f"remove {title} from the {client.name} queue" + (", delete it from the torrent client" if remove_from_client else "") + (", and blocklist it" if blocklist else "")
+        detail = self._remove_summary(tool_input)
         if not await approve(detail):
             return "The user DENIED removing this download (or did not answer in time). Nothing changed."
         await client.delete_queue_item(queue_id, remove_from_client, blocklist)
@@ -1026,7 +1061,7 @@ class MediaTools:
         name = tool_input.get("name") or torrent_hash[:8]
         delete_files = bool(tool_input.get("delete_files", False))
         if action == "delete":
-            what = f"delete torrent {name}" + (" AND its files" if delete_files else " (keep files)")
+            what = self._torrent_summary(tool_input)
             if not await approve(what):
                 return "The user DENIED deleting this torrent (or did not answer in time). Nothing changed."
         await self._qbit.action(action, torrent_hash, delete_files)

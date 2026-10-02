@@ -17,6 +17,8 @@ DISCORD_LIMIT = 2000
 RESET_COMMANDS = {"!reset", "!new"}
 NOTHING_TO_REPORT = "NOTHING_TO_REPORT"
 FOLLOWUP_POLL_SECONDS = 30
+# Discord select menus cap at 25 options.
+MAX_PICKABLE = 25
 FOLLOWUP_PREFIX = (
     "This is a follow-up you scheduled earlier, firing now. Nobody is asking; you asked yourself. "
     "Do it, then say what you found in a line or two. Your instruction to yourself was: "
@@ -100,6 +102,121 @@ class ApprovalView(discord.ui.View):
             self.result.set_result(False)
 
 
+class _ItemPicker(discord.ui.Select):
+    """Optional narrowing: tick only the items you want to go ahead."""
+
+    def __init__(self, count: int) -> None:
+        super().__init__(
+            placeholder="Optional: pick just some of them",
+            min_values=0,
+            max_values=count,
+            options=[discord.SelectOption(label=str(i + 1), value=str(i)) for i in range(count)],
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view: BatchApprovalView = self.view  # type: ignore[assignment]
+        if interaction.user.id not in view.allowed:
+            await interaction.response.send_message("You can't approve actions for this bot.", ephemeral=True)
+            return
+        view.chosen = {int(v) for v in self.values}
+        await interaction.response.defer()
+
+
+class BatchApprovalView(discord.ui.View):
+    """One message covering several sensitive actions: all, some, or none.
+
+    Claude often asks for a dozen deletes in one turn. Asking per item buries
+    the user and hides the shape of what is about to happen.
+    """
+
+    def __init__(self, allowed_user_ids: frozenset[int], timeout: float, count: int) -> None:
+        super().__init__(timeout=timeout)
+        self.allowed = allowed_user_ids
+        self.count = count
+        self.chosen: set[int] = set()
+        self.result: asyncio.Future[list[bool]] = asyncio.get_running_loop().create_future()
+        if 1 < count <= MAX_PICKABLE:
+            self.add_item(_ItemPicker(count))
+
+    def _settle(self, verdicts: list[bool]) -> None:
+        if not self.result.done():
+            self.result.set_result(verdicts)
+        for item in self.children:
+            item.disabled = True  # type: ignore[attr-defined]
+        self.stop()
+
+    async def _may_decide(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id not in self.allowed:
+            await interaction.response.send_message("You can't approve actions for this bot.", ephemeral=True)
+            return False
+        if self.result.done():
+            await interaction.response.defer()
+            return False
+        return True
+
+    async def _close(self, interaction: discord.Interaction, verdict: str) -> None:
+        verdict_line = f"**{verdict}** by {interaction.user.display_name}"
+        content = "\n".join([interaction.message.content, verdict_line])
+        await interaction.response.edit_message(content=content, view=self)
+
+    @discord.ui.button(label="Approve all", style=discord.ButtonStyle.success, row=1)
+    async def approve_all(self, interaction: discord.Interaction, _b: discord.ui.Button) -> None:
+        if not await self._may_decide(interaction):
+            return
+        self._settle([True] * self.count)
+        await self._close(interaction, f"All {self.count} approved")
+
+    @discord.ui.button(label="Approve selected", style=discord.ButtonStyle.primary, row=1)
+    async def approve_selected(self, interaction: discord.Interaction, _b: discord.ui.Button) -> None:
+        if not await self._may_decide(interaction):
+            return
+        if not self.chosen:
+            await interaction.response.send_message("Pick some items first, or use Approve all.", ephemeral=True)
+            return
+        self._settle([i in self.chosen for i in range(self.count)])
+        await self._close(interaction, f"{len(self.chosen)} of {self.count} approved")
+
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger, row=1)
+    async def deny(self, interaction: discord.Interaction, _b: discord.ui.Button) -> None:
+        if not await self._may_decide(interaction):
+            return
+        self._settle([False] * self.count)
+        await self._close(interaction, "Denied")
+
+    async def on_timeout(self) -> None:
+        if not self.result.done():
+            self.result.set_result([False] * self.count)
+
+
+class _ChannelApprover:
+    """Asks the user to approve, one action at a time or a whole round at once."""
+
+    def __init__(self, channel: discord.abc.Messageable, allowed: frozenset[int], timeout: float) -> None:
+        self._channel = channel
+        self._allowed = allowed
+        self._timeout = timeout
+
+    @property
+    def _expires(self) -> str:
+        return f"(expires in {int(self._timeout // 60)} min)"
+
+    async def __call__(self, summary: str) -> bool:
+        view = ApprovalView(self._allowed, self._timeout)
+        await self._channel.send(f"**Approval needed:** {summary}\n{self._expires}", view=view)
+        return await view.result
+
+    async def many(self, summaries: list[str]) -> list[bool]:
+        view = BatchApprovalView(self._allowed, self._timeout, len(summaries))
+        listed = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(summaries))
+        body = f"**Approval needed for {len(summaries)} actions:**\n{listed}\n{self._expires}"
+        chunks = split_message(body)
+        for chunk in chunks[:-1]:
+            await self._channel.send(chunk)
+        await self._channel.send(chunks[-1], view=view)
+        return await view.result
+
+
 class HomeBot(discord.Client):
     def __init__(
         self,
@@ -159,14 +276,8 @@ class HomeBot(discord.Client):
             self._conversation = convo
         return convo
 
-    def _approver(self, channel: discord.abc.Messageable):
-        async def approve(summary: str) -> bool:
-            view = ApprovalView(self.config.allowed_user_ids, self.config.approval_timeout_s)
-            minutes = int(self.config.approval_timeout_s // 60)
-            await channel.send(f"**Approval needed:** {summary}\n(expires in {minutes} min)", view=view)
-            return await view.result
-
-        return approve
+    def _approver(self, channel: discord.abc.Messageable) -> "_ChannelApprover":
+        return _ChannelApprover(channel, self.config.allowed_user_ids, self.config.approval_timeout_s)
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or message.channel.id != self.config.channel_id:
