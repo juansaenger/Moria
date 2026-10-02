@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import datetime
 import logging
 import time
@@ -72,6 +73,25 @@ def build_system_prompt(workspace: Path, capabilities: str = "") -> str:
     return "\n\n".join(parts)
 
 
+def user_content(header_text: str, images: list[tuple[str, bytes]] | None) -> str | list[dict[str, Any]]:
+    """Plain text when there are no images, else image blocks followed by the text."""
+    if not images:
+        return header_text
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": base64.standard_b64encode(data).decode("ascii"),
+            },
+        }
+        for media_type, data in images
+    ]
+    blocks.append({"type": "text", "text": header_text})
+    return blocks
+
+
 class HomeAgent:
     def __init__(
         self,
@@ -99,9 +119,17 @@ class HomeAgent:
         # don't rewrite history (which would break caching and thinking replay).
         return Conversation(system=build_system_prompt(self._workspace, self._capabilities))
 
-    async def ask(self, convo: Conversation, sender: str, text: str, approve: Approver) -> str:
+    async def ask(
+        self,
+        convo: Conversation,
+        sender: str,
+        text: str,
+        approve: Approver,
+        images: list[tuple[str, bytes]] | None = None,
+    ) -> str:
         now = datetime.datetime.now(self._tz).strftime("%a %Y-%m-%d %H:%M")
-        convo.messages.append({"role": "user", "content": f"[{sender}, {now}] {text}"})
+        header = f"[{sender}, {now}] {text}"
+        convo.messages.append({"role": "user", "content": user_content(header, images)})
         convo.last_active = time.monotonic()
 
         self._sender = sender
