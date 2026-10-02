@@ -167,6 +167,20 @@ class SeerrClient:
         data = await self._http.request("GET", "/api/v1/request", params={"take": take, "sort": "added", "filter": "all"})
         return (data or {}).get("results", [])
 
+    async def search(self, query: str) -> list[dict[str, Any]]:
+        data = await self._http.request("GET", "/api/v1/search", params={"query": query, "page": 1})
+        return (data or {}).get("results", [])
+
+    async def detail(self, media_type: str, tmdb_id: int) -> dict[str, Any]:
+        kind = "tv" if media_type == "tv" else "movie"
+        return await self._http.request("GET", f"/api/v1/{kind}/{tmdb_id}") or {}
+
+    async def request(self, media_type: str, tmdb_id: int, seasons: Any = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"mediaType": media_type, "mediaId": tmdb_id}
+        if media_type == "tv":
+            payload["seasons"] = seasons if seasons else "all"
+        return await self._http.request("POST", "/api/v1/request", json=payload) or {}
+
     async def title(self, media_type: str, tmdb_id: int) -> str:
         key = (media_type, tmdb_id)
         if key not in self._titles:
@@ -364,6 +378,52 @@ class MediaTools:
                     "input_schema": {
                         "type": "object",
                         "properties": {"only_open": {"type": "boolean", "description": "Hide requests that are fully available. Default true."}},
+                        "additionalProperties": False,
+                    },
+                }
+            )
+        if self._seerr:
+            defs.append(
+                {
+                    "name": "search_media",
+                    "description": (
+                        "Look up a film or series by name before requesting it, so you can confirm the "
+                        "right title and year with the user. Returns the tmdb id, year, a one-line "
+                        "description, and whether it is already requested or available. Always do this "
+                        "before request_media; never guess an id."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "Title to search for."},
+                            "kind": {"type": "string", "enum": ["movie", "tv"], "description": "Narrow the search."},
+                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                }
+            )
+            defs.append(
+                {
+                    "name": "request_media",
+                    "description": (
+                        "Request a film or series through Seerr, using a tmdb id from search_media. It joins "
+                        "the same request list the household uses, and Sonarr or Radarr pick it up. Confirm "
+                        "the title and year with the user first. Refuses politely if it is already "
+                        "requested or already in the library."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string", "enum": ["movie", "tv"]},
+                            "tmdb_id": {"type": "integer", "description": "From search_media."},
+                            "seasons": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": "Series only: which seasons. Omit for all of them.",
+                            },
+                        },
+                        "required": ["kind", "tmdb_id"],
                         "additionalProperties": False,
                     },
                 }
@@ -566,6 +626,8 @@ class MediaTools:
     async def run(self, name: str, tool_input: dict[str, Any], approve: Approver) -> str:
         handler = {
             "media_requests": self._requests,
+            "search_media": self._search_media,
+            "request_media": self._request_media,
             "media_library_search": self._library_search,
             "download_queue": self._queue,
             "missing_media": self._missing,
@@ -588,6 +650,65 @@ class MediaTools:
         return self._arr[kind]
 
     # ---- handlers
+
+    async def _search_media(self, tool_input: dict[str, Any], _approve: Approver) -> str:
+        assert self._seerr is not None
+        query = _str(tool_input, "query")
+        kind = str(tool_input.get("kind") or "").strip().lower()
+        results = await self._seerr.search(query)
+        lines = []
+        for item in results[:12]:
+            media_type = item.get("mediaType")
+            if media_type not in ("movie", "tv"):
+                continue
+            if kind in ("movie", "tv") and media_type != kind:
+                continue
+            name = item.get("title") or item.get("name") or "?"
+            year = str(item.get("releaseDate") or item.get("firstAirDate") or "")[:4] or "?"
+            status = SEERR_MEDIA_STATUS.get((item.get("mediaInfo") or {}).get("status", 0), "not requested")
+            overview = " ".join(str(item.get("overview") or "").split())[:90]
+            lines.append(
+                f"{media_type} tmdb={item.get('id')} | {name} ({year}) | {status}" + (f" | {overview}" if overview else "")
+            )
+        if not lines:
+            return f"Nothing found for {query!r}. Try a different spelling, or add the year."
+        return (
+            "\n".join(lines)
+            + "\n\nConfirm the exact title and year with the user before requesting, then call "
+            "request_media with the tmdb id."
+        )
+
+    async def _request_media(self, tool_input: dict[str, Any], _approve: Approver) -> str:
+        assert self._seerr is not None
+        kind = str(tool_input.get("kind") or "").strip().lower()
+        if kind not in ("movie", "tv"):
+            raise MediaError("kind must be 'movie' or 'tv'")
+        tmdb_id = _int(tool_input, "tmdb_id")
+        seasons = tool_input.get("seasons")
+        detail = await self._seerr.detail(kind, int(tmdb_id or 0))
+        name = detail.get("title") or detail.get("name") or f"tmdb {tmdb_id}"
+        year = str(detail.get("releaseDate") or detail.get("firstAirDate") or "")[:4]
+        existing = (detail.get("mediaInfo") or {}).get("status")
+        if existing == 5:
+            return f"{name} ({year}) is already available in the library. Nothing requested."
+        if existing in (2, 3, 4):
+            return (
+                f"{name} ({year}) has already been requested and is {SEERR_MEDIA_STATUS.get(existing)}. "
+                "Nothing requested. Use media_requests or stalled_media to see why it has not arrived."
+            )
+        try:
+            created = await self._seerr.request(kind, int(tmdb_id or 0), seasons)
+        except MediaError as exc:
+            raise MediaError(f"Seerr refused the request for {name} ({year}): {exc}") from exc
+        season_txt = ""
+        if kind == "tv":
+            asked = created.get("seasons") or []
+            numbers = ",".join(str(s.get("seasonNumber")) for s in asked if isinstance(s, dict))
+            season_txt = f", seasons {numbers}" if numbers else ", all seasons"
+        return (
+            f"Requested {name} ({year}){season_txt} through Seerr as request #{created.get('id')}. "
+            "It will be picked up automatically; say so and offer to check back later."
+        )
 
     async def _requests(self, tool_input: dict[str, Any], _approve: Approver) -> str:
         assert self._seerr is not None

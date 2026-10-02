@@ -73,7 +73,7 @@ def describe_capabilities(
         lines.append(
             "- Media stack connected: "
             + ", ".join(media_services)
-            + ". You can see requests, queues and torrents, search indexers, grab releases, and remove downloads."
+            + ". You can see requests, queues and torrents, search indexers, grab releases, and remove downloads. You can also look a title up and request it through Seerr, which needs no approval; always confirm the title and year with the person first, because search returns several things with the same name."
         )
     else:
         lines.append("- No media tools are connected, so you cannot see Plex downloads or requests.")

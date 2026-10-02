@@ -415,3 +415,132 @@ def test_path_translation():
     assert tools._local_path("/downloads/a/b") == "/host/media/torrents/a/b"
     assert tools._local_path("/downloads") == "/host/media/torrents"
     assert tools._local_path("/elsewhere/a") is None
+
+
+# ---- requesting media through Seerr
+
+
+SEARCH_RESULTS = {
+    "results": [
+        {"id": 1422, "mediaType": "movie", "title": "The Departed", "releaseDate": "2006-10-05",
+         "overview": "An undercover cop and a mole in the police.", "mediaInfo": None},
+        {"id": 92048, "mediaType": "tv", "name": "The Departed", "firstAirDate": "2017-01-01",
+         "overview": "A different thing entirely.", "mediaInfo": {"status": 5}},
+        {"id": 999, "mediaType": "person", "name": "Someone"},
+    ]
+}
+
+
+def _seerr_handler(servers, detail, created=None, calls=None):
+    original = servers.handler
+
+    def handler(request):
+        if request.url.host != "seerr":
+            return original(request)
+        path = request.url.path
+        if path == "/api/v1/search":
+            return httpx.Response(200, json=SEARCH_RESULTS)
+        if path.startswith("/api/v1/movie/") or path.startswith("/api/v1/tv/"):
+            return httpx.Response(200, json=detail)
+        if path == "/api/v1/request" and request.method == "POST":
+            if calls is not None:
+                calls.append(json.loads(request.content))
+            return httpx.Response(201, json=created or {"id": 77})
+        return httpx.Response(404)
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_search_lists_candidates_with_year_and_status(servers, monkeypatch):
+    monkeypatch.setattr(servers, "handler", _seerr_handler(servers, {}))
+    tools = MediaTools(seerr=SeerrClient("http://seerr", "k"))
+    out = await tools.run("search_media", {"query": "The Departed"}, Approver(True))
+    assert "movie tmdb=1422" in out and "(2006)" in out
+    assert "tv tmdb=92048" in out and "available" in out
+    assert "person" not in out  # actors are not requestable
+    assert "Confirm the exact title and year" in out
+
+
+@pytest.mark.asyncio
+async def test_search_can_be_narrowed_to_one_kind(servers, monkeypatch):
+    monkeypatch.setattr(servers, "handler", _seerr_handler(servers, {}))
+    tools = MediaTools(seerr=SeerrClient("http://seerr", "k"))
+    out = await tools.run("search_media", {"query": "The Departed", "kind": "movie"}, Approver(True))
+    assert "tmdb=1422" in out and "tmdb=92048" not in out
+
+
+@pytest.mark.asyncio
+async def test_requesting_a_film_reports_the_request_number(servers, monkeypatch):
+    calls: list[dict] = []
+    detail = {"title": "The Departed", "releaseDate": "2006-10-05", "mediaInfo": None}
+    monkeypatch.setattr(servers, "handler", _seerr_handler(servers, detail, calls=calls))
+    tools = MediaTools(seerr=SeerrClient("http://seerr", "k"))
+    out = await tools.run("request_media", {"kind": "movie", "tmdb_id": 1422}, Approver(True))
+    assert calls == [{"mediaType": "movie", "mediaId": 1422}]
+    assert "Requested The Departed (2006)" in out and "#77" in out
+
+
+@pytest.mark.asyncio
+async def test_a_series_defaults_to_every_season(servers, monkeypatch):
+    calls: list[dict] = []
+    detail = {"name": "Silo", "firstAirDate": "2023-05-05", "mediaInfo": None}
+    monkeypatch.setattr(servers, "handler", _seerr_handler(servers, detail, created={"id": 5, "seasons": []}, calls=calls))
+    tools = MediaTools(seerr=SeerrClient("http://seerr", "k"))
+    await tools.run("request_media", {"kind": "tv", "tmdb_id": 123}, Approver(True))
+    assert calls[0]["seasons"] == "all"
+
+
+@pytest.mark.asyncio
+async def test_specific_seasons_are_passed_through(servers, monkeypatch):
+    calls: list[dict] = []
+    detail = {"name": "Silo", "firstAirDate": "2023-05-05", "mediaInfo": None}
+    monkeypatch.setattr(servers, "handler", _seerr_handler(servers, detail, created={"id": 5, "seasons": [{"seasonNumber": 2}]}, calls=calls))
+    tools = MediaTools(seerr=SeerrClient("http://seerr", "k"))
+    out = await tools.run("request_media", {"kind": "tv", "tmdb_id": 123, "seasons": [2]}, Approver(True))
+    assert calls[0]["seasons"] == [2]
+    assert "seasons 2" in out
+
+
+@pytest.mark.asyncio
+async def test_already_available_is_not_requested_again(servers, monkeypatch):
+    detail = {"title": "The Departed", "releaseDate": "2006-10-05", "mediaInfo": {"status": 5}}
+    calls: list[dict] = []
+    monkeypatch.setattr(servers, "handler", _seerr_handler(servers, detail, calls=calls))
+    tools = MediaTools(seerr=SeerrClient("http://seerr", "k"))
+    out = await tools.run("request_media", {"kind": "movie", "tmdb_id": 1422}, Approver(True))
+    assert "already available" in out and calls == []
+
+
+@pytest.mark.asyncio
+async def test_already_requested_points_at_the_stall_check(servers, monkeypatch):
+    detail = {"title": "The Departed", "releaseDate": "2006-10-05", "mediaInfo": {"status": 3}}
+    calls: list[dict] = []
+    monkeypatch.setattr(servers, "handler", _seerr_handler(servers, detail, calls=calls))
+    tools = MediaTools(seerr=SeerrClient("http://seerr", "k"))
+    out = await tools.run("request_media", {"kind": "movie", "tmdb_id": 1422}, Approver(True))
+    assert "already been requested" in out and "stalled_media" in out and calls == []
+
+
+@pytest.mark.asyncio
+async def test_requesting_needs_no_approval(servers, monkeypatch):
+    detail = {"title": "The Departed", "releaseDate": "2006-10-05", "mediaInfo": None}
+    monkeypatch.setattr(servers, "handler", _seerr_handler(servers, detail))
+    tools = MediaTools(seerr=SeerrClient("http://seerr", "k"))
+    recorder = Approver(False)
+    out = await tools.run("request_media", {"kind": "movie", "tmdb_id": 1422}, recorder)
+    assert recorder.asked == [] and "Requested" in out
+    assert await tools.preview("request_media", {"kind": "movie", "tmdb_id": 1422}) is None
+
+
+@pytest.mark.asyncio
+async def test_bad_kind_is_rejected(servers, monkeypatch):
+    monkeypatch.setattr(servers, "handler", _seerr_handler(servers, {}))
+    tools = MediaTools(seerr=SeerrClient("http://seerr", "k"))
+    with pytest.raises(MediaError, match="kind must be"):
+        await tools.run("request_media", {"kind": "album", "tmdb_id": 1}, Approver(True))
+
+
+def test_request_tools_need_seerr():
+    arr_only = MediaTools(sonarr=ArrClient("Sonarr", "http://s", "k"))
+    assert "search_media" not in arr_only.names and "request_media" not in arr_only.names
