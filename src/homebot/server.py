@@ -32,6 +32,13 @@ TEMP_HOT_C = 60
 # A consumer SSD past this is worth planning around, not panicking about.
 POWER_ON_HOURS_OLD = 43800  # five years
 
+# Uptime Kuma monitor states. Pending means failing but still inside its retry
+# window; maintenance means someone paused it deliberately.
+KUMA_DOWN = 0
+KUMA_UP = 1
+KUMA_PENDING = 2
+KUMA_MAINTENANCE = 3
+
 # NUT ups.status flags that mean something is wrong right now.
 UPS_BAD_FLAGS = {
     "OB": "running on battery, mains power is out",
@@ -163,7 +170,7 @@ class KumaClient:
     async def aclose(self) -> None:
         await self._http.aclose()
 
-    async def monitors(self) -> list[tuple[str, bool]]:
+    async def monitors(self) -> list[tuple[str, int]]:
         try:
             response = await self._http.get("/metrics")
         except httpx.HTTPError as exc:
@@ -177,10 +184,13 @@ class KumaClient:
             if not line.startswith("monitor_status{"):
                 continue
             name = re.search(r'monitor_name="([^"]*)"', line)
-            value = line.rsplit(" ", 1)[-1].strip()
-            if name:
-                # 1 = up, 0 = down, 2 = pending, 3 = maintenance
-                out.append((name.group(1), value == "1"))
+            raw = line.rsplit(" ", 1)[-1].strip()
+            if not name:
+                continue
+            try:
+                out.append((name.group(1), int(float(raw))))
+            except ValueError:
+                continue
         return out
 
 
@@ -356,7 +366,21 @@ class ServerTools:
         if self._kuma is None:
             return [], []
         monitors = await self._kuma.monitors()
-        down = [n for n, up in monitors if not up]
+        down = sorted(n for n, status in monitors if status == KUMA_DOWN)
+        pending = sorted(n for n, status in monitors if status == KUMA_PENDING)
+        # Maintenance is deliberate, so reporting it as an outage would cry wolf
+        # every time a monitor is paused on purpose.
+        watched = [n for n, status in monitors if status != KUMA_MAINTENANCE]
+        bad = []
         if down:
-            return [f"{len(down)} monitored service(s) DOWN: {', '.join(sorted(down)[:12])}"], []
-        return [], [f"all {len(monitors)} monitored services up"]
+            bad.append(f"{len(down)} monitored service(s) DOWN: {', '.join(down[:12])}")
+        if pending:
+            bad.append(
+                f"{len(pending)} service(s) failing their checks but still retrying, so not confirmed down "
+                f"yet: {', '.join(pending[:12])}"
+            )
+        if bad:
+            return bad, []
+        paused = len(monitors) - len(watched)
+        note = f"all {len(watched)} monitored services up"
+        return [], [note + (f" ({paused} paused for maintenance)" if paused else "")]
