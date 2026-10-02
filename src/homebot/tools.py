@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable, Protocol
 from ha_mcp.ha_client import HomeAssistantError
 
 from .media import MediaError
+from .automations import AutomationError
 from .followups import FollowupError
 from .server import ServerError
 
@@ -171,7 +172,7 @@ class HomeTools:
             if name in toolset.names:
                 try:
                     return await toolset.run(name, tool_input, approve)
-                except (MediaError, ServerError, FollowupError) as exc:
+                except (MediaError, ServerError, FollowupError, AutomationError) as exc:
                     raise ToolError(str(exc)) from exc
         try:
             if name == "list_entities":

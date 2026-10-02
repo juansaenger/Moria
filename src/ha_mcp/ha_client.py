@@ -70,6 +70,17 @@ class HomeAssistantClient:
             payload["entity_id"] = entity_id
         return await self._request("POST", f"/services/{domain}/{service}", json=payload)
 
+    async def get_automation_config(self, automation_id: str) -> dict[str, Any]:
+        """The editable config behind an automation, as stored in automations.yaml."""
+        return await self._request("GET", f"/config/automation/config/{automation_id}")
+
+    async def save_automation_config(self, automation_id: str, config: dict[str, Any]) -> Any:
+        """Create or replace an automation. Home Assistant reloads them itself."""
+        return await self._request("POST", f"/config/automation/config/{automation_id}", json=config)
+
+    async def delete_automation_config(self, automation_id: str) -> Any:
+        return await self._request("DELETE", f"/config/automation/config/{automation_id}")
+
     async def get_history(self, entity_id: str, hours: float) -> Any:
         start = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)
         return await self._request(

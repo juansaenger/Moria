@@ -9,6 +9,7 @@ from anthropic import AsyncAnthropic
 from ha_mcp.ha_client import HomeAssistantClient, HomeAssistantError
 
 from .agent import HomeAgent
+from .automations import AutomationTools
 from .config import Config, ConfigError
 from .followups import FollowupStore, FollowupTools
 from .discord_bot import run
@@ -67,6 +68,7 @@ def describe_capabilities(
             + " need the user to tap Approve first. You cannot bypass that."
         )
     lines.append("- When several sensitive actions are needed at once, they are offered as ONE approval message listing every item, and the user can approve all, approve a selection, or deny. Ask for the whole set in one turn rather than drip-feeding them.")
+    lines.append("- You can read Home Assistant automations, and create, edit or delete them. Edits show the user a YAML diff and need Approve. Always read an automation before editing it and send back the whole config, never a fragment.")
     if media_services:
         lines.append(
             "- Media stack connected: "
@@ -117,7 +119,8 @@ async def main() -> None:
         followups = FollowupStore(config.workspace / "followups.json")
         followup_tools = FollowupTools(followups, config.timezone)
         logging.info("follow-ups: %s pending", len(followups.all()))
-        extra = [x for x in (media, server, followup_tools) if x is not None]
+        automations = AutomationTools(ha)
+        extra = [x for x in (media, server, followup_tools, automations) if x is not None]
         tools = HomeTools(ha, policy, config.workspace / "notes.md", extra=extra)
         agent = HomeAgent(
             AsyncAnthropic(),

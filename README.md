@@ -95,3 +95,11 @@ torrent started in 30 minutes". Pending follow-ups live in
 `workspace/followups.json`, so they survive a restart or a rebuild, and arrive as
 a message from "Follow-up". Ask it to list or cancel them in plain language.
 No new settings: times use the `TZ` you already set.
+
+## Automations
+
+The bot can list and read your Home Assistant automations, and create, edit or
+delete them. Reads are free. Any change shows you the YAML, as a diff when it is
+an edit, and waits for the Approve button; Home Assistant reloads on its own
+afterwards. Only automations stored in `automations.yaml` can be edited, which is
+everything created in the UI and most hand-written ones. No new settings.
