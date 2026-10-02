@@ -96,7 +96,18 @@ def check_branch(name: str, base: str) -> str:
 
 async def git(repo: Path, *args: str, token_url: str | None = None) -> str:
     """Run one git command. Never shells out, so nothing is interpolated."""
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_ASKPASS="", GIT_CONFIG_NOSYSTEM="1")
+    # The clone is owned by the host user, not the container user, so git's
+    # "dubious ownership" check would refuse every command. Declare it safe for
+    # this process only, rather than writing config into the image or the repo.
+    env = dict(
+        os.environ,
+        GIT_TERMINAL_PROMPT="0",
+        GIT_ASKPASS="",
+        GIT_CONFIG_NOSYSTEM="1",
+        GIT_CONFIG_COUNT="1",
+        GIT_CONFIG_KEY_0="safe.directory",
+        GIT_CONFIG_VALUE_0=str(repo),
+    )
     proc = await asyncio.create_subprocess_exec(
         "git", "-C", str(repo), *args,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
