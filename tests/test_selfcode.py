@@ -350,3 +350,29 @@ async def test_the_scratch_clone_is_cleaned_up_even_on_failure(repo, monkeypatch
             Approver(True),
         )
     assert set(Path(_tempfile.gettempdir()).glob("homebot-proposal-*")) == before
+
+
+def test_the_bot_is_told_how_a_merge_reaches_the_server():
+    """It sent the user to redeploy by hand, which the watcher already does."""
+    import datetime
+    import os as _os
+    from zoneinfo import ZoneInfo
+
+    for key, value in {
+        "DISCORD_BOT_TOKEN": "t", "DISCORD_CHANNEL_ID": "1", "DISCORD_ALLOWED_USER_IDS": "2",
+        "ANTHROPIC_API_KEY": "k", "HOMEASSISTANT_URL": "http://h", "HOMEASSISTANT_TOKEN": "k",
+        "TZ": "America/Chicago", "GITHUB_TOKEN": "tok", "GITHUB_REPO": "o/r",
+        "GITHUB_BASE_BRANCH": "work", "REPO_PATH": _os.getcwd(),
+    }.items():
+        _os.environ.setdefault(key, value)
+
+    from homebot.__main__ import describe_capabilities
+    from homebot.config import Config
+
+    _os.environ["DEPLOY_ON_MERGE"] = "true"
+    on = describe_capabilities(Config.from_env(), [], [])
+    _os.environ["DEPLOY_ON_MERGE"] = "false"
+    off = describe_capabilities(Config.from_env(), [], [])
+
+    assert "ships it by itself" in on and "Do NOT tell them to redeploy by hand" in on
+    assert "ships it by itself" not in off

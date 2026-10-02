@@ -141,5 +141,7 @@ class Config:
                 token=os.environ.get("GITHUB_TOKEN", "").strip(),
                 repo=_opt("GITHUB_REPO"),
                 base_branch=_opt("GITHUB_BASE_BRANCH"),
+                deploy_on_merge=os.environ.get("DEPLOY_ON_MERGE", "").strip().lower()
+                in ("1", "true", "yes"),
             ),
         )

@@ -96,6 +96,13 @@ def describe_capabilities(
             "changing it and send its complete new contents. The user is shown a diff and must approve "
             "before anything is pushed. You cannot merge and cannot deploy."
         )
+        if config.repo.deploy_on_merge:
+            lines.append(
+                "- Once the user merges your pull request, a watcher on the server ships it by "
+                "itself within about five minutes: it runs the tests, rebuilds, checks you came "
+                "back up, and restores the previous build if anything fails. So tell them to merge "
+                "it and that it will be live shortly. Do NOT tell them to redeploy by hand."
+            )
     elif config.repo.can_read:
         lines.append("- You can read your own source but not propose changes; no GitHub token is set.")
     lines.append("- You remember things across chats only via the remember tool; chat history resets when idle.")

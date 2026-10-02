@@ -57,6 +57,9 @@ class RepoConfig:
     token: str = ""
     repo: str = ""  # owner/name
     base_branch: str = ""
+    # True when a watcher on the server ships whatever lands on the base
+    # branch, so merging is all the user has to do.
+    deploy_on_merge: bool = False
 
     @property
     def can_read(self) -> bool:
