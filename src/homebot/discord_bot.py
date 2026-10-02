@@ -19,6 +19,10 @@ NOTHING_TO_REPORT = "NOTHING_TO_REPORT"
 FOLLOWUP_POLL_SECONDS = 30
 # Discord select menus cap at 25 options.
 MAX_PICKABLE = 25
+# Image types Claude accepts, and limits that keep requests reasonable.
+IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+MAX_IMAGES = 4
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
 FOLLOWUP_PREFIX = (
     "This is a follow-up you scheduled earlier, firing now. Nobody is asking; you asked yourself. "
     "Do it, then say what you found in a line or two. Your instruction to yourself was: "
@@ -66,6 +70,29 @@ def split_message(text: str, limit: int = DISCORD_LIMIT) -> list[str]:
         text = text[cut:].lstrip()
     chunks.append(text)
     return chunks
+
+
+async def read_images(attachments: list[discord.Attachment]) -> tuple[list[tuple[str, bytes]], list[str]]:
+    """Download supported image attachments. Returns (images, names of skipped files)."""
+    images: list[tuple[str, bytes]] = []
+    skipped: list[str] = []
+    for att in attachments:
+        media_type = (att.content_type or "").split(";")[0].strip().lower()
+        if media_type not in IMAGE_TYPES:
+            skipped.append(f"{att.filename} (not a supported image)")
+            continue
+        if att.size > MAX_IMAGE_BYTES:
+            skipped.append(f"{att.filename} (over 5 MB)")
+            continue
+        if len(images) >= MAX_IMAGES:
+            skipped.append(f"{att.filename} (more than {MAX_IMAGES} images)")
+            continue
+        try:
+            images.append((media_type, await att.read()))
+        except Exception:
+            log.exception("could not download attachment %s", att.filename)
+            skipped.append(f"{att.filename} (download failed)")
+    return images, skipped
 
 
 class ApprovalView(discord.ui.View):
@@ -285,19 +312,30 @@ class HomeBot(discord.Client):
         if message.author.id not in self.config.allowed_user_ids:
             return
         text = message.content.strip()
-        if not text:
-            return
         if text.lower() in RESET_COMMANDS:
             self._conversation = None
             await message.reply("Starting fresh.", mention_author=False)
             return
+
+        images, skipped = await read_images(list(message.attachments))
+        if not text and not images:
+            return
+        if skipped:
+            note = "(Attachments not shown to you: " + ", ".join(skipped) + ")"
+            text = f"{text}\n{note}" if text else note
+        if images and not text:
+            text = "(sent an image with no text)"
 
         async with self._lock:
             convo = self._current_conversation()
             try:
                 async with message.channel.typing():
                     reply = await self.agent.ask(
-                        convo, message.author.display_name, text, self._approver(message.channel)
+                        convo,
+                        message.author.display_name,
+                        text,
+                        self._approver(message.channel),
+                        images=images or None,
                     )
             except Exception:
                 log.exception("request failed")
