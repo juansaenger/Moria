@@ -81,6 +81,11 @@ rsync -a --delete \
     --exclude='.git' --exclude='.env' --exclude='workspace' \
     --exclude='bin' --exclude='.docker' --exclude='homebot.env' \
     "$REPO/" "$APP/"
+# Settings live outside the repo, so refresh them here too. Without this a new
+# key or changed time would sit in homebot.env and never reach the container.
+tr -d '\r' < "$HOME_DIR/homebot.env" > "$APP/.env"
+chmod 600 "$APP/.env"
+
 cd "$APP"
 if ! docker compose up -d --build --force-recreate >> "$LOG" 2>&1; then
     say "BUILD FAILED"
