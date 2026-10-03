@@ -111,7 +111,7 @@ class Config:
             allowed_domains=frozenset(_csv("ALLOWED_DOMAINS", DEFAULT_ALLOWED_DOMAINS)),
             sensitive_domains=frozenset(_csv("SENSITIVE_DOMAINS", DEFAULT_SENSITIVE_DOMAINS)),
             sensitive_keywords=tuple(_csv("SENSITIVE_KEYWORDS", DEFAULT_SENSITIVE_KEYWORDS)),
-            nightly_check_time=_time("NIGHTLY_CHECK_TIME", "22:30", tz),
+            nightly_check_time=_time("NIGHTLY_CHECK_TIME", "off", tz),
             download_check_time=_time("DOWNLOAD_CHECK_TIME", "09:00", tz),
             server_check_time=_time("SERVER_CHECK_TIME", "08:45", tz),
             morning_summary_time=_time("MORNING_SUMMARY_TIME", "off", tz),
